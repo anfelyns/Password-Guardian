@@ -1,3 +1,24 @@
-PyQt5>=5.15.0
-cryptography>=3.4.0
-pyperclip>=1.8.0
+# SecureVault Password Manager - Dependencies
+
+# ==================== GUI ====================
+PyQt5==5.15.10
+
+# ==================== Backend API ====================
+Flask==3.0.0
+Flask-CORS==4.0.0
+
+# ==================== Database ====================
+mysql-connector-python==8.2.0
+
+# ==================== Encryption ====================
+pycryptodome==3.19.0
+
+# ==================== HTTP Requests ====================
+requests==2.31.0
+
+# ==================== Optional (for graphs) ====================
+matplotlib==3.8.2
+
+# ==================== Email (built-in, no install needed) ====================
+# smtplib (Python standard library)
+# email (Python standard library)

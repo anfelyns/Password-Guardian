@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QFrame, QApplication, QMessageBox, QDialog, QMenu, QAction
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 
 from gui.components.sidebar import Sidebar
@@ -15,9 +15,12 @@ from gui.components.modals import (
 )
 from gui.styles.styles import Styles
 
+# Backend (MySQL + 2FA + API)
 from auth.auth_manager import AuthManager
+from backend.api_client import APIClient
 
 
+# ------------------- User Profile -------------------
 class UserProfileWidget(QWidget):
     logout_clicked = pyqtSignal()
     show_statistics = pyqtSignal()
@@ -124,21 +127,37 @@ class UserProfileWidget(QWidget):
         menu.exec_(self.mapToGlobal(self.rect().bottomRight()))
 
 
-
+# ------------------- Main Window -------------------
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-
+        # ---- Backend auth (MySQL @ port 1234, no password) ----
         self.auth = AuthManager(
             host='localhost', user='root', password='',
             database='password_guardian', port=1234
         )
+        
+        # ---- API Client for password operations ----
+        self.api = APIClient(base_url='http://localhost:5000')
 
-        self.current_user = None     
-        self._all_passwords = []       
+        self.current_user = None       # dict: id, username, email, name, initials
+        self._all_passwords = []       # in-memory demo list
         self.init_ui()
+        
+        # Check API connection
+        if not self.api.check_connection():
+            QMessageBox.warning(
+                self, 
+                "⚠️ API Non Disponible",
+                "Le serveur API n'est pas accessible.\n\n"
+                "Assurez-vous que le serveur Flask est démarré:\n"
+                "python backend_api/app.py\n\n"
+                "L'application fonctionnera en mode démo."
+            )
+        
         self.show_auth_flow()
 
+    # ---------- UI skeleton ----------
     def init_ui(self):
         self.setWindowTitle("SecureVault")
         self.setMinimumSize(1400, 800)
@@ -196,11 +215,12 @@ class MainWindow(QMainWindow):
         left = QHBoxLayout()
         left.setSpacing(12)
         
-
+        # Shield icon
         icon = QLabel("🛡️")
         icon.setStyleSheet("font-size: 32px;")
         left.addWidget(icon)
 
+        # SecureVault branding
         txt = QLabel("SecureVault")
         txt.setFont(QFont("Segoe UI", 24, QFont.Bold))
         txt.setStyleSheet(f"color: {Styles.TEXT_PRIMARY}; background: transparent;")
@@ -222,6 +242,7 @@ class MainWindow(QMainWindow):
         self.password_list.delete_password.connect(self.on_delete_password)
         self.password_list.favorite_password.connect(self.on_favorite_password)
 
+    # ---------- Auth flow ----------
     def show_auth_flow(self):
         self.show_login_modal()
 
@@ -237,7 +258,8 @@ class MainWindow(QMainWindow):
         dlg.register_success.connect(self.start_register_two_factor)  # name, email, password
         dlg.switch_to_login.connect(self.show_login_modal)
         dlg.exec_()
-    # Step 1: Login → check creds + send 2FA code
+
+    # Step 1: Login → send 2FA code
     def start_login_two_factor(self, username_or_email, password):
         ok, user_info, msg, meta = self.auth.authenticate(username_or_email, password)
         if not ok:
@@ -253,6 +275,7 @@ class MainWindow(QMainWindow):
             tf.code_verified.connect(lambda: self._verify_login_code_and_finalize(user_info, tf))
             tf.exec_()
         else:
+            # fallback (should not happen with 2FA forced)
             self.finalize_login(user_info)
 
     def _verify_login_code_and_finalize(self, user_info, tf_dialog):
@@ -260,6 +283,7 @@ class MainWindow(QMainWindow):
         Called when user hits 'verify' in TwoFactorModal.
         We fetch the entered code from the modal and verify with backend.
         """
+        # TwoFactorModal exposes self.code_input
         code_entered = tf_dialog.code_input.text().strip()
         ok, msg = self.auth.verify_two_factor(user_info['id'], code_entered, purpose='login', device_label="Desktop App")
         if not ok:
@@ -343,10 +367,81 @@ class MainWindow(QMainWindow):
 
     # ---------- Data & filters ----------
     def load_passwords(self):
-        # demo data (you can load from DB later)
-        demo = [
-            {'id': 1, 'site_name': 'Gmail',   'site_icon': '📧', 'username': 'john@gmail.com',
-             'encrypted_password': 'SecurePass123!', 'category': 'personal', 'strength': 'strong',
+        """Load passwords from API or use demo data"""
+        if not self.current_user:
+            return
+        
+        user_id = self.current_user.get('id')
+        
+        # Try to load from API
+        success, message, passwords = self.api.get_passwords(user_id)
+        
+        if success and passwords:
+            # Transform API data to match UI format
+            demo = []
+            for p in passwords:
+                demo.append({
+                    'id': p['id'],
+                    'site_name': p['site_name'],
+                    'site_icon': self.get_icon_for_site(p['site_name']),
+                    'username': p['username'],
+                    'encrypted_password': p.get('password_display', '•••••••'),
+                    'category': p['category'],
+                    'strength': p['strength'],
+                    'favorite': bool(p.get('favorite', False)),
+                    'last_modified': p.get('last_updated', 'Aujourd\'hui')
+                })
+            
+            self._all_passwords = demo
+            self.password_list.load_passwords(demo)
+        else:
+            # Fallback to demo data
+            demo = [
+                {'id': 1, 'site_name': 'Gmail',   'site_icon': '📧', 'username': 'john@gmail.com',
+                 'encrypted_password': '•••••••', 'category': 'personal', 'strength': 'strong',
+                 'favorite': True,  'last_modified': 'Maj. 04/10/2025 20:00'},
+                {'id': 2, 'site_name': 'GitHub',  'site_icon': '💻', 'username': 'johndev',
+                 'encrypted_password': '•••••••',    'category': 'work',     'strength': 'strong',
+                 'favorite': False, 'last_modified': 'Maj. 04/10/2025 20:00'},
+                {'id': 3, 'site_name': 'Netflix', 'site_icon': '🎬', 'username': 'john@email.com',
+                 'encrypted_password': '•••••••',     'category': 'personal', 'strength': 'medium',
+                 'favorite': True,  'last_modified': 'Maj. 04/10/2025 20:00'},
+                {'id': 4, 'site_name': 'PayPal',  'site_icon': '💳', 'username': 'john@paypal.com',
+                 'encrypted_password': '•••••••',  'category': 'finance',  'strength': 'weak',
+                 'favorite': False, 'last_modified': 'Maj. 04/10/2025 20:00'},
+            ]
+            self._all_passwords = demo
+            self.password_list.load_passwords(demo)
+
+        # Update counts
+        passwords = self._all_passwords
+        counts = {
+            'all': len(passwords),
+            'work':     sum(1 for p in passwords if p['category'] == 'work'),
+            'personal': sum(1 for p in passwords if p['category'] == 'personal'),
+            'finance':  sum(1 for p in passwords if p['category'] == 'finance'),
+            'favorites':sum(1 for p in passwords if p.get('favorite', False)),
+        }
+        self.sidebar.update_counts(counts)
+    
+    def get_icon_for_site(self, site_name):
+        """Get emoji icon based on site name"""
+        site_lower = site_name.lower()
+        icons = {
+            'gmail': '📧', 'email': '📧', 'mail': '📧',
+            'github': '💻', 'gitlab': '💻', 'code': '💻',
+            'netflix': '🎬', 'youtube': '🎬', 'video': '🎬',
+            'paypal': '💳', 'bank': '💳', 'card': '💳',
+            'facebook': '📘', 'twitter': '🐦', 'instagram': '📷',
+            'amazon': '🛒', 'shop': '🛒',
+            'game': '🎮', 'steam': '🎮',
+        }
+        
+        for key, icon in icons.items():
+            if key in site_lower:
+                return icon
+        
+        return '🔒'  # Default iconencrypted_password': 'SecurePass123!', 'category': 'personal', 'strength': 'strong',
              'favorite': True,  'last_modified': 'Maj. 04/10/2025 20:00'},
             {'id': 2, 'site_name': 'GitHub',  'site_icon': '💻', 'username': 'johndev',
              'encrypted_password': 'GitHub456#',    'category': 'work',     'strength': 'strong',
@@ -382,52 +477,184 @@ class MainWindow(QMainWindow):
             filtered = [p for p in base if p.get('category') == category]
         self.password_list.load_passwords(filtered)
 
+    # ---------- CRUD actions ----------
     def show_add_password_modal(self):
         dlg = AddPasswordModal(self)
         dlg.password_added.connect(self.on_password_added)
         dlg.exec_()
 
     def on_password_added(self, data):
-        QMessageBox.information(self, "Succès", "Mot de passe ajouté !")
-        self.load_passwords()
+        """Handle password addition via API"""
+        if not self.current_user:
+            return
+        
+        user_id = self.current_user.get('id')
+        
+        # Map category names
+        category_map = {
+            'personnel': 'personal',
+            'travail': 'work',
+            'finance': 'finance',
+            'jeux': 'game',
+            'étude': 'study',
+            'autre': 'personal'
+        }
+        
+        category = category_map.get(data.get('category', 'personal').lower(), 'personal')
+        
+        # Add via API
+        success, message, response = self.api.add_password(
+            user_id=user_id,
+            site_name=data['site_name'],
+            username=data['username'],
+            password=data['password'],
+            category=category,
+            favorite=data.get('favorite', False)
+        )
+        
+        if success:
+            # Check if password was weak
+            if response and 'suggestion' in response:
+                QMessageBox.warning(
+                    self, 
+                    "⚠️ Mot de passe faible",
+                    f"Votre mot de passe est faible !\n\n"
+                    f"Suggestion de mot de passe fort :\n{response['suggestion']}\n\n"
+                    f"Voulez-vous l'utiliser à la place ?"
+                )
+            else:
+                QMessageBox.information(self, "Succès", "Mot de passe ajouté avec succès !")
+            
+            self.load_passwords()
+        else:
+            QMessageBox.warning(self, "Erreur", f"Impossible d'ajouter le mot de passe:\n{message}")
 
     def on_copy_password(self, password):
+        """Copy password to clipboard - reveal from API if needed"""
         QApplication.clipboard().setText(password)
-        QMessageBox.information(self, "Copié", "Mot de passe copié !")
+        QMessageBox.information(self, "Copié", "Mot de passe copié dans le presse-papier !")
 
     def on_view_password(self, password_data):
+        """View password - reveal actual password from API"""
+        # If password is hidden (•••••••), reveal it
+        if password_data.get('encrypted_password') == '•••••••':
+            success, message, real_password = self.api.reveal_password(password_data['id'])
+            if success and real_password:
+                password_data['encrypted_password'] = real_password
+            else:
+                QMessageBox.warning(self, "Erreur", f"Impossible de révéler le mot de passe:\n{message}")
+                return
+        
         dlg = ViewPasswordModal(password_data, self)
         dlg.exec_()
 
     def on_edit_password(self, password_id: int):
+        """Edit password via API"""
         pwd = next((p for p in self.password_list.passwords if p.get('id') == password_id), None)
         if not pwd:
             QMessageBox.warning(self, "Introuvable", "Mot de passe introuvable.")
             return
 
+        # Reveal password before editing
+        success, message, real_password = self.api.reveal_password(password_id)
+        if success and real_password:
+            pwd['encrypted_password'] = real_password
+        
         dlg = EditPasswordModal(pwd, self)
 
         def _apply_update(pid, new_pwd, last_mod):
-            for item in self.password_list.passwords:
-                if item.get('id') == pid:
-                    item['encrypted_password'] = new_pwd
-                    item['last_modified'] = last_mod
-                    break
-            self.password_list.apply_filter(self.password_list.current_filter)
-            QMessageBox.information(self, "Mis à jour", "Dernière modification enregistrée.")
+            # Map category
+            category_map = {
+                'personnel': 'personal',
+                'travail': 'work',
+                'finance': 'finance',
+                'jeux': 'game',
+                'étude': 'study',
+                'autre': 'personal'
+            }
+            
+            category = category_map.get(pwd.get('category', 'personal').lower(), 'personal')
+            
+            # Update via API
+            success, msg, response = self.api.update_password(
+                password_id=pid,
+                site_name=pwd['site_name'],
+                username=pwd['username'],
+                password=new_pwd,
+                category=category,
+                favorite=pwd.get('favorite', False)
+            )
+            
+            if success:
+                QMessageBox.information(self, "Mis à jour", "Mot de passe mis à jour avec succès !")
+                self.load_passwords()
+            else:
+                QMessageBox.warning(self, "Erreur", f"Impossible de mettre à jour:\n{msg}")
 
         dlg.password_updated.connect(_apply_update)
         dlg.exec_()
 
     def on_delete_password(self, password_id):
-        if QMessageBox.question(self, "Confirmation", "Supprimer ce mot de passe ?") == QMessageBox.Yes:
-            QMessageBox.information(self, "Supprimé", "Mot de passe supprimé !")
-            self.load_passwords()
+        """Delete password via API"""
+        reply = QMessageBox.question(
+            self, 
+            "Confirmation", 
+            "Êtes-vous sûr de vouloir supprimer ce mot de passe ?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            success, message = self.api.delete_password(password_id)
+            
+            if success:
+                QMessageBox.information(self, "Supprimé", "Mot de passe supprimé avec succès !")
+                self.load_passwords()
+            else:
+                QMessageBox.warning(self, "Erreur", f"Impossible de supprimer:\n{message}")
 
     def on_favorite_password(self, password_id):
-        QMessageBox.information(self, "Favori", "État favori modifié !")
-        self.load_passwords()
+        """Toggle favorite status"""
+        pwd = next((p for p in self.password_list.passwords if p.get('id') == password_id), None)
+        if not pwd:
+            return
+        
+        # Toggle favorite
+        pwd['favorite'] = not pwd.get('favorite', False)
+        
+        # Update via API
+        category_map = {
+            'personnel': 'personal',
+            'travail': 'work',
+            'finance': 'finance',
+            'jeux': 'game',
+            'étude': 'study',
+            'autre': 'personal'
+        }
+        
+        category = category_map.get(pwd.get('category', 'personal').lower(), 'personal')
+        
+        # Get real password first
+        success, msg, real_pwd = self.api.reveal_password(password_id)
+        if not success:
+            QMessageBox.warning(self, "Erreur", "Impossible de modifier le favori")
+            return
+        
+        success, message, _ = self.api.update_password(
+            password_id=password_id,
+            site_name=pwd['site_name'],
+            username=pwd['username'],
+            password=real_pwd,
+            category=category,
+            favorite=pwd['favorite']
+        )
+        
+        if success:
+            QMessageBox.information(self, "Favori", "État favori modifié !")
+            self.load_passwords()
+        else:
+            QMessageBox.warning(self, "Erreur", f"Impossible de modifier:\n{message}")
 
+    # ---------- Stats modal with graph ----------
     def show_statistics_modal(self):
         from PyQt5.QtWidgets import QGridLayout, QSizePolicy
         stats_dialog = QDialog(self)
