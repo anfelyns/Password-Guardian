@@ -7,6 +7,6 @@
 ## Quick Start
 ```bash
 python -m venv .venv
-. .venv/Scripts/activate  # Windows
+. .venv/Scripts/activate  
 pip install -r requirements.txt
 python start_securevault.py
