@@ -15,3 +15,4 @@ class Config:
     
     # Encryption
     ENCRYPTION_KEY = b'votre_cle_de_chiffrement_32_bytes_ici!!'
+    API_BASE_URL = "http://127.0.0.1:5000"
