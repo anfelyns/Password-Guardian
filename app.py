@@ -97,6 +97,259 @@ def generate_strong_password(length=12):
     random.shuffle(password)
     
     return ''.join(password)
+    # ================== API ROUTES ==================
+
+#  Add a new password
+@app.route("/passwords", methods=["POST"])
+def add_password():
+    try:
+        data = request.json
+        
+        # Check required fields
+        required_fields = ['user_id', 'site_name', 'username', 'password', 'category']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Field {field} is required"}), 400
+        
+        # Validate category
+        valid_categories = ['personal', 'work', 'finance', 'study', 'game']
+        if data['category'] not in valid_categories:
+            return jsonify({"error": f"Invalid category. Must be one of: {', '.join(valid_categories)}"}), 400
+        
+        # Calculate strength of the original password
+        strength = check_password_strength(data['password'])
+
+        # Encrypt password before storage
+        encrypted = encrypt_password(data['password'])
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO passwords 
+               (user_id, site_name, username, encrypted_password, category, strength, favorite) 
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (data['user_id'], data['site_name'], data['username'], 
+             encrypted, data['category'], strength, data.get('favorite', False))
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if strength in ["weak", "medium"]:
+            suggestion = generate_strong_password(14)
+            return jsonify({
+                "message": "Password added  but it is weak or medium ",
+                "strength": strength,
+                "suggestion": suggestion
+            })
+        else:
+            return jsonify({"message": "Password added ", "strength": strength})
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+#  List all passwords for a user
+@app.route("/passwords/<int:user_id>", methods=["GET"])
+def get_passwords(user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM passwords WHERE user_id=%s ORDER BY last_updated DESC", (user_id,))
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        # Hide real password in the response
+        for r in results:
+            r['password_display'] = "*******"
+            if 'encrypted_password' in r:
+                del r['encrypted_password']
+
+        return jsonify(results)
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+# Reveal a specific password
+@app.route("/passwords/<int:pwd_id>/reveal", methods=["GET"])
+def reveal_password(pwd_id):
+    """Reveal the actual password only when requested."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT encrypted_password FROM passwords WHERE id=%s", (pwd_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not result:
+            return jsonify({"error": "Password not found"}), 404
+
+        # Decrypt only on request
+        real_password = decrypt_password(result['encrypted_password'])
+        
+        return jsonify({
+            "real_password": real_password,
+            "message": "Password revealed - use with caution!"
+        })
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+# Update a password
+@app.route("/passwords/<int:pwd_id>", methods=["PUT"])
+def update_password(pwd_id):
+    try:
+        data = request.json
+        
+        # Check required fields
+        required_fields = ['site_name', 'username', 'password', 'category']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Field {field} is required"}), 400
+        
+        # Validate category
+        valid_categories = ['personal', 'work', 'finance', 'study', 'game']
+        if data['category'] not in valid_categories:
+            return jsonify({"error": f"Invalid category. Must be one of: {', '.join(valid_categories)}"}), 400
+        
+        # Calculate strength
+        strength = check_password_strength(data['password'])
+
+        # Encrypt new password
+        encrypted = encrypt_password(data['password'])
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Removed last_updated=NOW(), DB will auto-update timestamp
+        cursor.execute(
+            """UPDATE passwords 
+               SET site_name=%s, username=%s, encrypted_password=%s, category=%s, 
+                   strength=%s, favorite=%s
+               WHERE id=%s""",
+            (data['site_name'], data['username'], encrypted, 
+             data['category'], strength, data.get('favorite', False), pwd_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if strength in ["weak", "medium"]:
+            suggestion = generate_strong_password(14)
+            return jsonify({
+                "message": "Password updated  but it is weak or medium ",
+                "strength": strength,
+                "suggestion": suggestion
+            })
+        else:
+            return jsonify({"message": "Password updated ", "strength": strength})
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+#  Delete a password
+@app.route("/passwords/<int:pwd_id>", methods=["DELETE"])
+def delete_password(pwd_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM passwords WHERE id=%s", (pwd_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "Password deleted "})
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+#  Get favorite passwords
+@app.route("/passwords/favorites/<int:user_id>", methods=["GET"])
+def get_favorites(user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM passwords WHERE user_id=%s AND favorite=1 ORDER BY last_updated DESC", (user_id,))
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for r in results:
+            r['password_display'] = "*******"
+            if 'encrypted_password' in r:
+                del r['encrypted_password']
+
+        return jsonify(results)
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+#  Filter by category
+@app.route("/passwords/category/<int:user_id>/<string:cat>", methods=["GET"])
+def get_by_category(user_id, cat):
+    try:
+        valid_categories = ['personal', 'work', 'finance', 'study', 'game']
+        if cat not in valid_categories:
+            return jsonify({"error": f"Invalid category. Must be one of: {', '.join(valid_categories)}"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM passwords WHERE user_id=%s AND category=%s ORDER BY last_updated DESC", (user_id, cat))
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for r in results:
+            r['password_display'] = "*******"
+            if 'encrypted_password' in r:
+                del r['encrypted_password']
+
+        return jsonify(results)
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+#  Search passwords (by site_name or username)
+@app.route("/passwords/search/<int:user_id>", methods=["GET"])
+def search_passwords(user_id):
+    try:
+        q = request.args.get("q", "")
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT * FROM passwords 
+            WHERE user_id=%s 
+            AND (LOWER(site_name) LIKE LOWER(%s) OR LOWER(username) LIKE LOWER(%s)) 
+            ORDER BY last_updated DESC
+        """, (user_id, f"%{q}%", f"%{q}%"))
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for r in results:
+            r['password_display'] = "*******"
+            if 'encrypted_password' in r:
+                del r['encrypted_password']
+
+        return jsonify(results)
+    
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+
+#  Suggest a strong password
+@app.route("/passwords/suggestion", methods=["GET"])
+def suggest_password():
+    pwd = generate_strong_password(14)
+    return jsonify({"message": "Here is a strong password suggestion ", "suggestion": pwd})
+
+
 
 
 
