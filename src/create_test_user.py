@@ -6,7 +6,6 @@ Run this before launching the application for the first time
 import sys
 import os
 
-# Add src to path if needed
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.auth.auth_manager import AuthManager

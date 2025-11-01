@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import QFrame, QVBoxLayout, QPushButton, QLabel
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
-
+from gui.styles.styles import Styles
 
 class CategoryButton(QPushButton):
     def __init__(self, icon, text, count=0, parent=None):

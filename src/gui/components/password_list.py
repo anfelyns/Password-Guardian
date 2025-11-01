@@ -1,21 +1,21 @@
-# src/gui/components/password_list.py - COMPLETE WITH ALL FEATURES
-
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QFrame, QScrollArea, QLineEdit, QMenu, QAction, QGridLayout
-)
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QPushButton, QFrame, QScrollArea,
+                             QLineEdit, QMenu, QAction)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
-from datetime import datetime
 
 
 class PasswordCard(QFrame):
-    """Compact, beautiful password card with all features"""
+    """Modern password card with rounded design - optimized width"""
     copy_clicked = pyqtSignal(str)
     view_clicked = pyqtSignal(dict)
     edit_clicked = pyqtSignal(int)
     delete_clicked = pyqtSignal(int)
     favorite_clicked = pyqtSignal(int)
+    
+    # 2FA signals
+    request_2fa_for_copy = pyqtSignal(str)
+    request_2fa_for_view = pyqtSignal(dict)
 
     def __init__(self, password_data, parent=None):
         super().__init__(parent)
@@ -23,295 +23,279 @@ class PasswordCard(QFrame):
         self.init_ui()
 
     def init_ui(self):
-        from gui.styles.styles import Styles
+        from src.gui.styles.styles import Styles
 
-        # Compact card with fixed height
-        self.setFixedHeight(160)
+        # Modern card with fixed width
+        self.setFixedWidth(650)  # Fixed width to prevent horizontal scrolling
         self.setStyleSheet(f"""
             QFrame {{
-                background: rgba(30, 41, 59, 0.5);
-                border: 1px solid rgba(71, 85, 105, 0.3);
-                border-radius: 12px;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(30, 48, 80, 0.85),
+                    stop:1 rgba(20, 35, 60, 0.85)
+                );
+                border: 1px solid rgba(96, 165, 250, 0.25);
+                border-radius: 20px;
+                padding: 20px;
             }}
             QFrame:hover {{
-                background: rgba(30, 41, 59, 0.7);
-                border: 1px solid rgba(96, 165, 250, 0.5);
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(40, 60, 95, 0.9),
+                    stop:1 rgba(25, 40, 70, 0.9)
+                );
+                border: 1px solid {Styles.BLUE_PRIMARY};
             }}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # ========== TOP: Icon + Site Name + Favorite + Actions ==========
-        top_row = QHBoxLayout()
-        top_row.setSpacing(10)
+        # Header: Icon + Site Name + Action Buttons
+        header = QHBoxLayout()
+        header.setSpacing(12)
 
-        # Icon (smaller, 40x40)
+        # Icon with gradient background
         icon_frame = QFrame()
-        icon_frame.setFixedSize(40, 40)
-        
-        # Get category for color
-        category = self.password_data.get('category', 'personal')
-        category_colors = {
-            'work': 'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8b5cf6, stop:1 #6d28d9)',
-            'personal': 'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3b82f6, stop:1 #2563eb)',
-            'finance': 'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #10b981, stop:1 #059669)',
-            'game': 'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f59e0b, stop:1 #d97706)',
-            'study': 'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ec4899, stop:1 #db2777)',
-        }
-        
+        icon_frame.setFixedSize(50, 50)
         icon_frame.setStyleSheet(f"""
             QFrame {{
-                background: {category_colors.get(category, category_colors['personal'])};
-                border-radius: 10px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {Styles.BLUE_PRIMARY}, stop:1 {Styles.PURPLE});
+                border-radius: 14px;
+                border: none;
             }}
         """)
-        
-        icon_layout = QVBoxLayout(icon_frame)
-        icon_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Site icon (emoji or first letter)
-        site_icon = self.password_data.get('site_icon', '')
-        if not site_icon:
-            site_name = self.password_data.get('site_name', 'S')
-            site_icon = site_name[0].upper()
-        
-        icon = QLabel(site_icon)
-        icon.setStyleSheet("font-size: 20px; background: transparent; color: white;")
+        il = QVBoxLayout(icon_frame)
+        il.setContentsMargins(0, 0, 0, 0)
+
+        icon = QLabel(self.password_data.get('site_icon', '🔒'))
+        icon.setStyleSheet("font-size: 24px; background: transparent; color: white;")
         icon.setAlignment(Qt.AlignCenter)
-        icon_layout.addWidget(icon)
-        
-        top_row.addWidget(icon_frame)
+        il.addWidget(icon)
+        header.addWidget(icon_frame)
 
-        # Site name + username
+        # Site name and username
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(2)
+        info_layout.setSpacing(4)
         
-        site_label = QLabel(self.password_data.get('site_name', 'Site'))
-        site_label.setStyleSheet("""
-            color: white; 
-            font-size: 15px; 
-            font-weight: 600; 
+        site = QLabel(self.password_data.get('site_name', 'Site'))
+        site.setStyleSheet(f"""
+            color: {Styles.TEXT_PRIMARY};
+            font-size: 16px;
+            font-weight: bold;
             background: transparent;
         """)
-        site_label.setFont(QFont("Segoe UI", 14, QFont.DemiBold))
+        site.setFont(QFont("Segoe UI", 14, QFont.Bold))
         
-        user_label = QLabel(self.password_data.get('username', ''))
-        user_label.setStyleSheet("""
-            color: rgba(148, 163, 184, 1); 
-            font-size: 12px; 
+        user = QLabel(self.password_data.get('username', ''))
+        user.setStyleSheet(f"""
+            color: {Styles.TEXT_SECONDARY};
+            font-size: 12px;
             background: transparent;
         """)
+        user.setWordWrap(True)
         
-        info_layout.addWidget(site_label)
-        info_layout.addWidget(user_label)
-        top_row.addLayout(info_layout)
-        
-        top_row.addStretch()
+        info_layout.addWidget(site)
+        info_layout.addWidget(user)
+        header.addLayout(info_layout, 1)
 
-        # Action buttons: Favorite (star), View (eye), Delete (trash)
-        is_favorite = self.password_data.get('favorite', False)
+        # Action buttons (view, edit, delete)
+        btn_container = QHBoxLayout()
+        btn_container.setSpacing(6)
+
+        view_btn = QPushButton("👁️")
+        edit_btn = QPushButton("✏️")
+        delete_btn = QPushButton("🗑️")
+
+        for btn in (view_btn, edit_btn, delete_btn):
+            btn.setFixedSize(34, 34)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton { 
+                    background: rgba(255,255,255,0.08); 
+                    border: 1px solid rgba(255,255,255,0.15);
+                    border-radius: 10px; 
+                    font-size: 14px; 
+                }
+                QPushButton:hover { 
+                    background: rgba(59,130,246,0.3); 
+                    border: 1px solid rgba(59,130,246,0.5);
+                }
+            """)
+
+        view_btn.setToolTip("Voir le mot de passe")
+        edit_btn.setToolTip("Modifier")
+        delete_btn.setToolTip("Supprimer")
         
-        fav_btn = QPushButton("⭐" if is_favorite else "☆")
-        fav_btn.setFixedSize(28, 28)
-        fav_btn.setCursor(Qt.PointingHandCursor)
-        fav_btn.setToolTip("Favori")
-        fav_btn.clicked.connect(lambda: self.favorite_clicked.emit(self.password_data['id']))
-        fav_btn.setStyleSheet(f"""
+        # View and edit with 2FA
+        view_btn.clicked.connect(lambda: self.request_2fa_for_view.emit(self.password_data))
+        edit_btn.clicked.connect(lambda: self.edit_clicked.emit(self.password_data['id']))
+        delete_btn.clicked.connect(lambda: self.delete_clicked.emit(self.password_data['id']))
+
+        btn_container.addWidget(view_btn)
+        btn_container.addWidget(edit_btn)
+        btn_container.addWidget(delete_btn)
+        
+        header.addLayout(btn_container)
+        layout.addLayout(header)
+
+        # Password display with copy button
+        pwd_container = QFrame()
+        pwd_container.setStyleSheet(f"""
+            QFrame {{ 
+                background: rgba(15, 34, 56, 0.7); 
+                border: 1px solid rgba(59, 130, 246, 0.25); 
+                border-radius: 12px; 
+                padding: 12px 14px; 
+            }}
+        """)
+        pwd_layout = QHBoxLayout(pwd_container)
+        pwd_layout.setContentsMargins(0, 0, 0, 0)
+        pwd_layout.setSpacing(10)
+
+        pwd_label = QLabel("• • • • • • • • • •")
+        pwd_label.setStyleSheet(f"""
+            color: {Styles.BLUE_SECONDARY};
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 3px;
+            font-weight: bold;
+            background: transparent;
+        """)
+        pwd_layout.addWidget(pwd_label)
+        pwd_layout.addStretch()
+
+        copy_btn = QPushButton("📋 Copier")
+        copy_btn.setFixedHeight(36)
+        copy_btn.setCursor(Qt.PointingHandCursor)
+        copy_btn.setToolTip("Copier le mot de passe (nécessite 2FA)")
+        # Copy with 2FA
+        copy_btn.clicked.connect(lambda: self.request_2fa_for_copy.emit(
+            self.password_data.get('encrypted_password', '')
+        ))
+        copy_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {Styles.BLUE_PRIMARY}, stop:1 {Styles.BLUE_SECONDARY});
+                color: white; 
+                border: none; 
+                border-radius: 10px; 
+                font-size: 12px; 
+                font-weight: bold;
+                padding: 0px 16px;
+            }}
+            QPushButton:hover {{ 
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {Styles.BLUE_SECONDARY}, stop:1 {Styles.BLUE_PRIMARY});
+            }}
+        """)
+        pwd_layout.addWidget(copy_btn)
+
+        layout.addWidget(pwd_container)
+
+        # Footer: Strength + Category + Date + Favorite
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        
+        # Strength indicator
+        strength = self.password_data.get('strength', 'medium')
+        sc = {
+            'strong': (Styles.STRONG_COLOR, 'Fort'),
+            'medium': (Styles.MEDIUM_COLOR, 'Moyen'),
+            'weak': (Styles.WEAK_COLOR, 'Faible')
+        }
+        color, text = sc.get(strength, (Styles.TEXT_MUTED, 'Inconnu'))
+        
+        strength_frame = QFrame()
+        strength_frame.setStyleSheet(f"""
+            QFrame {{
+                background: rgba{tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (26,)};
+                border: 1px solid rgba{tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (51,)};
+                border-radius: 8px;
+                padding: 5px 10px;
+            }}
+        """)
+        sl_layout = QHBoxLayout(strength_frame)
+        sl_layout.setContentsMargins(0, 0, 0, 0)
+        sl_layout.setSpacing(5)
+        
+        sl = QLabel(f"● {text}")
+        sl.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: bold; background: transparent;")
+        sl_layout.addWidget(sl)
+        
+        footer.addWidget(strength_frame)
+        
+        # Category
+        cat = self.password_data.get('category', 'personal')
+        icons = {'personal':'👤','work':'💼','finance':'💳','game':'🎮','games':'🎮','study':'📚','trash':'🗑️'}
+        cat_labels = {
+            'personal': 'Personnel',
+            'work': 'Travail',
+            'finance': 'Finance',
+            'game': 'Jeux',
+            'study': 'Étude'
+        }
+        
+        cl = QLabel(f"{icons.get(cat,'🔒')} {cat_labels.get(cat, cat.capitalize())}")
+        cl.setStyleSheet(f"color: {Styles.TEXT_MUTED}; font-size: 10px; background: transparent;")
+        footer.addWidget(cl)
+        
+        # Last modified date
+        last_updated = self.password_data.get('last_updated', '')
+        if last_updated:
+            # Format date nicely
+            from datetime import datetime
+            try:
+                if isinstance(last_updated, str):
+                    # Try to parse and format
+                    date_label = QLabel(f"🕒 {last_updated}")
+                else:
+                    date_label = QLabel(f"🕒 {last_updated.strftime('%d/%m/%Y %H:%M')}")
+            except:
+                date_label = QLabel(f"🕒 {str(last_updated)}")
+            
+            date_label.setStyleSheet(f"color: {Styles.TEXT_MUTED}; font-size: 10px; background: transparent;")
+            footer.addWidget(date_label)
+        
+        footer.addStretch()
+        
+        # Favorite button
+        is_favorite = self.password_data.get('favorite', False)
+        self.favorite_btn = QPushButton("⭐" if is_favorite else "☆")
+        self.favorite_btn.setFixedSize(30, 30)
+        self.favorite_btn.setCursor(Qt.PointingHandCursor)
+        self.favorite_btn.setToolTip("Ajouter aux favoris" if not is_favorite else "Retirer des favoris")
+        self.favorite_btn.clicked.connect(lambda: self.favorite_clicked.emit(self.password_data['id']))
+        self.favorite_btn.setStyleSheet(f"""
             QPushButton {{ 
-                background: {'rgba(250, 204, 21, 0.2)' if is_favorite else 'rgba(71, 85, 105, 0.3)'}; 
-                border: none;
-                border-radius: 6px; 
+                background: {'rgba(255,193,7,0.2)' if is_favorite else 'rgba(255,255,255,0.08)'}; 
+                border: 1px solid {'rgba(255,193,7,0.4)' if is_favorite else 'rgba(255,255,255,0.15)'};
+                border-radius: 8px; 
                 font-size: 14px;
             }}
             QPushButton:hover {{ 
-                background: rgba(250, 204, 21, 0.3); 
+                background: rgba(255,193,7,0.3); 
+                border: 1px solid rgba(255,193,7,0.5);
             }}
         """)
+        footer.addWidget(self.favorite_btn)
         
-        view_btn = QPushButton("👁️")
-        view_btn.setFixedSize(28, 28)
-        view_btn.setCursor(Qt.PointingHandCursor)
-        view_btn.setToolTip("Voir le mot de passe")
-        view_btn.clicked.connect(lambda: self.view_clicked.emit(self.password_data))
-        
-        delete_btn = QPushButton("🗑️")
-        delete_btn.setFixedSize(28, 28)
-        delete_btn.setCursor(Qt.PointingHandCursor)
-        delete_btn.setToolTip("Supprimer")
-        delete_btn.clicked.connect(lambda: self.delete_clicked.emit(self.password_data['id']))
-        
-        for btn in (view_btn, delete_btn):
-            btn.setStyleSheet("""
-                QPushButton { 
-                    background: rgba(71, 85, 105, 0.3); 
-                    border: none;
-                    border-radius: 6px; 
-                    font-size: 13px;
-                }
-                QPushButton:hover { 
-                    background: rgba(96, 165, 250, 0.3); 
-                }
-            """)
-        
-        top_row.addWidget(fav_btn)
-        top_row.addWidget(view_btn)
-        top_row.addWidget(delete_btn)
-
-        layout.addLayout(top_row)
-
-        # ========== MIDDLE: Password dots + Copy button ==========
-        pwd_row = QHBoxLayout()
-        pwd_row.setSpacing(8)
-
-        pwd_dots = QLabel("• • • • • • • • • •")
-        pwd_dots.setStyleSheet("""
-            color: rgba(148, 163, 184, 0.8); 
-            font-size: 14px; 
-            font-family: 'Courier New';
-            letter-spacing: 2px;
-            background: transparent;
-        """)
-        pwd_row.addWidget(pwd_dots)
-        pwd_row.addStretch()
-
-        copy_btn = QPushButton("📋 Copier")
-        copy_btn.setFixedHeight(30)
-        copy_btn.setCursor(Qt.PointingHandCursor)
-        copy_btn.clicked.connect(lambda: self.copy_clicked.emit(
-            self.password_data.get('encrypted_password', '')
-        ))
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
-                    stop:0 #3b82f6, stop:1 #2563eb);
-                color: white; 
-                border: none; 
-                border-radius: 6px; 
-                font-size: 12px; 
-                font-weight: 600;
-                padding: 0px 14px;
-            }
-            QPushButton:hover { 
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
-                    stop:0 #2563eb, stop:1 #1d4ed8); 
-            }
-        """)
-        pwd_row.addWidget(copy_btn)
-        
-        layout.addLayout(pwd_row)
-
-        # ========== BOTTOM: Strength bar + Last modified + Category ==========
-        bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(8)
-        
-        # Strength indicator (compact)
-        strength = self.password_data.get('strength', 'medium')
-        strength_config = {
-            'strong': ('Fort:', '#10b981'),
-            'medium': ('Moyen:', '#f59e0b'),
-            'weak': ('Faible:', '#ef4444')
-        }
-        
-        strength_text, strength_color = strength_config.get(strength, ('Moyen:', '#f59e0b'))
-        
-        strength_label = QLabel(strength_text)
-        strength_label.setStyleSheet(f"""
-            color: {strength_color}; 
-            font-size: 10px; 
-            font-weight: 600;
-            background: transparent;
-        """)
-        bottom_row.addWidget(strength_label)
-        
-        # Strength bar (mini progress bar)
-        strength_value = {'strong': 100, 'medium': 60, 'weak': 30}.get(strength, 60)
-        
-        strength_bar_container = QFrame()
-        strength_bar_container.setFixedSize(50, 4)
-        strength_bar_container.setStyleSheet("""
-            QFrame {
-                background: rgba(71, 85, 105, 0.3);
-                border-radius: 2px;
-            }
-        """)
-        
-        strength_bar = QFrame(strength_bar_container)
-        strength_bar.setFixedSize(int(50 * strength_value / 100), 4)
-        strength_bar.setStyleSheet(f"""
-            QFrame {{
-                background: {strength_color};
-                border-radius: 2px;
-            }}
-        """)
-        
-        bottom_row.addWidget(strength_bar_container)
-        bottom_row.addStretch()
-        
-        # Last modified date
-        last_modified = self.password_data.get('last_updated') or self.password_data.get('created_at')
-        if last_modified:
-            if isinstance(last_modified, str) and len(last_modified) > 10:
-                try:
-                    dt = datetime.strptime(last_modified, '%Y-%m-%d %H:%M:%S')
-                    # Calculate days ago
-                    days_ago = (datetime.now() - dt).days
-                    if days_ago == 0:
-                        date_text = "Aujourd'hui"
-                    elif days_ago == 1:
-                        date_text = "Hier"
-                    elif days_ago < 7:
-                        date_text = f"Il y a {days_ago}j"
-                    elif days_ago < 30:
-                        weeks = days_ago // 7
-                        date_text = f"Il y a {weeks}sem"
-                    else:
-                        date_text = dt.strftime('%d/%m/%Y')
-                except:
-                    date_text = "Récent"
-            else:
-                date_text = "Récent"
-        else:
-            date_text = "Aujourd'hui"
-        
-        date_label = QLabel(f"🕐 {date_text}")
-        date_label.setStyleSheet("""
-            color: rgba(148, 163, 184, 0.8); 
-            font-size: 10px;
-            background: transparent;
-        """)
-        bottom_row.addWidget(date_label)
-        
-        # Category badge
-        category_icons = {
-            'personal': '👤', 
-            'work': '💼', 
-            'finance': '💳', 
-            'game': '🎮', 
-            'study': '📚'
-        }
-        
-        category_label = QLabel(category_icons.get(category, '🔒'))
-        category_label.setFixedSize(20, 20)
-        category_label.setAlignment(Qt.AlignCenter)
-        category_label.setToolTip(category.capitalize())
-        category_label.setStyleSheet("""
-            font-size: 14px;
-            background: transparent;
-        """)
-        bottom_row.addWidget(category_label)
-        
-        layout.addLayout(bottom_row)
+        layout.addLayout(footer)
 
 
 class PasswordList(QWidget):
-    """Password list with 2-column grid"""
     copy_password = pyqtSignal(str)
     view_password = pyqtSignal(dict)
     edit_password = pyqtSignal(int)
     delete_password = pyqtSignal(int)
     favorite_password = pyqtSignal(int)
+    restore_password = pyqtSignal(int)
+    
+    # 2FA signals
+    request_2fa_for_copy = pyqtSignal(str)
+    request_2fa_for_view = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -322,129 +306,127 @@ class PasswordList(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        from gui.styles.styles import Styles
+        from src.gui.styles.styles import Styles
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(20)
+        main = QVBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(20)
 
-        # ========== HEADER ==========
         header = QHBoxLayout()
         header.setSpacing(20)
         
         title = QLabel("Mes Mots de Passe")
-        title.setStyleSheet("""
-            color: white; 
-            font-size: 24px; 
-            font-weight: 600; 
-            background: transparent;
-        """)
-        title.setFont(QFont("Segoe UI", 22, QFont.DemiBold))
+        title.setStyleSheet(f"color:{Styles.TEXT_PRIMARY}; font-size:24px; font-weight:bold;")
+        title.setFont(QFont("Segoe UI", 20, QFont.Bold))
         header.addWidget(title)
 
-        # Search box (compact)
         search_container = QFrame()
-        search_container.setFixedWidth(350)
+        search_container.setFixedWidth(400)
         search_container.setStyleSheet("QFrame { background: transparent; border: none; }")
-        search_layout = QHBoxLayout(search_container)
-        search_layout.setContentsMargins(0, 0, 0, 0)
-        search_layout.setSpacing(8)
+        sl = QHBoxLayout(search_container)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(8)
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Rechercher...")
         self.search_input.setFrame(False)
-        self.search_input.setMinimumHeight(40)
+        self.search_input.setMinimumHeight(44)
         self.search_input.setFont(QFont("Segoe UI", 13))
-        self.search_input.setTextMargins(14, 0, 14, 0)
-        self.search_input.setStyleSheet("""
-            QLineEdit {
-                background: rgba(30, 41, 59, 0.6);
-                border: 1px solid rgba(71, 85, 105, 0.3);
-                border-radius: 10px;
-                padding: 8px 14px;
-                color: white;
-                font-size: 13px;
-            }
-            QLineEdit::placeholder { color: rgba(148, 163, 184, 0.6); }
-            QLineEdit:focus { border: 1px solid rgba(96, 165, 250, 0.5); }
+        self.search_input.setTextMargins(16, 0, 16, 0)
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: rgba(26, 41, 66, 0.8);
+                border: 1px solid rgba(96,165,250,0.25);
+                border-radius: 22px;
+                padding: 10px 16px;
+                color: {Styles.TEXT_PRIMARY};
+                selection-background-color: {Styles.BLUE_PRIMARY};
+                selection-color: white;
+                font-size: 14px;
+            }}
+            QLineEdit::placeholder {{ color: {Styles.TEXT_MUTED}; }}
+            QLineEdit:focus {{
+                border: 1px solid {Styles.BLUE_PRIMARY};
+            }}
         """)
         self.search_input.textChanged.connect(self.on_search)
-        search_layout.addWidget(self.search_input, 1)
+        sl.addWidget(self.search_input, 1)
 
         self.filter_btn = QPushButton("🔍")
-        self.filter_btn.setFixedSize(40, 40)
+        self.filter_btn.setFixedSize(44, 44)
         self.filter_btn.setCursor(Qt.PointingHandCursor)
         self.filter_btn.clicked.connect(self.show_filter_menu)
-        self.filter_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(59, 130, 246, 0.2); 
-                border: 1px solid rgba(59, 130, 246, 0.3);
-                border-radius: 10px; 
-                font-size: 16px;
-            }
-            QPushButton:hover { 
-                background: rgba(59, 130, 246, 0.3); 
-            }
+        self.filter_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(59,130,246,0.15); 
+                border: 1px solid rgba(59,130,246,0.3);
+                border-radius:22px; 
+                font-size:16px; 
+                color:{Styles.BLUE_SECONDARY};
+            }}
+            QPushButton:hover {{ 
+                background: rgba(59,130,246,0.25); 
+                border: 1px solid rgba(59,130,246,0.5);
+            }}
         """)
-        search_layout.addWidget(self.filter_btn)
+        sl.addWidget(self.filter_btn)
         header.addWidget(search_container)
-        
-        main_layout.addLayout(header)
+        main.addLayout(header)
 
-        # ========== GRID ==========
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable horizontal scroll
         scroll.setStyleSheet("""
             QScrollArea { border: none; background: transparent; }
             QScrollBar:vertical { 
-                background: rgba(30, 41, 59, 0.3); 
-                width: 6px; 
-                border-radius: 3px; 
+                background: rgba(255,255,255,0.03); 
+                width: 10px; 
+                border-radius: 5px;
+                margin: 2px;
             }
-            QScrollBar::handle:vertical { 
-                background: rgba(96, 165, 250, 0.5); 
-                border-radius: 3px; 
-                min-height: 20px; 
+            QScrollBar::handle:vertical {
+                background: rgba(96, 165, 250, 0.3);
+                border-radius: 5px;
+                min-height: 20px;
             }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { 
-                height: 0px; 
+            QScrollBar::handle:vertical:hover {
+                background: rgba(96, 165, 250, 0.5);
             }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
-        
         self.grid_container = QWidget()
-        self.grid_container.setStyleSheet("QWidget { background: transparent; }")
-        self.grid_layout = QGridLayout(self.grid_container)
-        self.grid_layout.setSpacing(14)
-        self.grid_layout.setContentsMargins(2, 2, 2, 2)
-        
+        self.grid_layout = QVBoxLayout(self.grid_container)
+        self.grid_layout.setSpacing(16)
+        self.grid_layout.setContentsMargins(5, 5, 5, 5)
+        self.grid_layout.setAlignment(Qt.AlignTop)
         scroll.setWidget(self.grid_container)
-        main_layout.addWidget(scroll)
+        main.addWidget(scroll)
 
     def show_filter_menu(self):
+        from src.gui.styles.styles import Styles
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { 
-                background: rgba(30, 41, 59, 0.95); 
-                border: 1px solid rgba(71, 85, 105, 0.5); 
-                border-radius: 10px; 
-                padding: 6px; 
-            }
-            QMenu::item { 
-                padding: 8px 16px; 
-                border-radius: 6px; 
-                color: white; 
-                font-size: 13px; 
-            }
-            QMenu::item:selected { 
-                background: rgba(59, 130, 246, 0.3); 
-            }
+        menu.setStyleSheet(f"""
+            QMenu {{ 
+                background: {Styles.PRIMARY_BG}; 
+                border: 1px solid rgba(255,255,255,0.2); 
+                border-radius: 12px; 
+                padding: 10px; 
+            }}
+            QMenu::item {{ 
+                padding:10px 20px; 
+                border-radius:8px; 
+                color:{Styles.TEXT_PRIMARY}; 
+                font-size:13px; 
+            }}
+            QMenu::item:selected {{ 
+                background: rgba(59,130,246,0.2); 
+            }}
         """)
-        
         filters = [
-            ("📋 Tous", 'all'),
-            ("🔒 Forts", 'strong'),
-            ("⚠️ Moyens", 'medium'),
-            ("💔 Faibles", 'weak'),
+            ("📋 Tous les mots de passe", 'all'),
+            ("🔒 Forts seulement", 'strong'),
+            ("⚠️ Moyens seulement", 'medium'),
+            ("💔 Faibles seulement", 'weak'),
             ("⭐ Favoris", 'favorites'),
             ("💼 Travail", 'work'),
             ("👤 Personnel", 'personal'),
@@ -452,17 +434,14 @@ class PasswordList(QWidget):
             ("🎮 Jeux", 'game'),
             ("📚 Étude", 'study')
         ]
-        
         for text, ftype in filters:
             act = QAction(text, self)
             act.triggered.connect(lambda _, f=ftype: self.apply_filter(f))
             menu.addAction(act)
-        
         menu.exec_(self.filter_btn.mapToGlobal(self.filter_btn.rect().bottomLeft()))
 
     def apply_filter(self, filter_type):
         self.current_filter = filter_type
-        
         if filter_type == 'all':
             filtered = self.passwords
         elif filter_type in ('strong', 'medium', 'weak'):
@@ -471,83 +450,89 @@ class PasswordList(QWidget):
             filtered = [p for p in self.passwords if p.get('favorite')]
         else:
             filtered = [p for p in self.passwords if p.get('category') == filter_type]
-        
         self.load_passwords(filtered)
 
     def load_passwords(self, passwords):
-        """Load passwords in 2-column grid"""
+        """Load passwords in single column layout (vertical only)"""
         self.passwords = passwords
         self.filtered_passwords = passwords[:]
 
-        # Clear grid
         for i in reversed(range(self.grid_layout.count())):
-            item = self.grid_layout.itemAt(i)
-            if item and item.widget():
-                item.widget().setParent(None)
+            w = self.grid_layout.itemAt(i).widget()
+            if w: 
+                w.setParent(None)
 
-        # Empty state
-        if not passwords:
-            from gui.styles.styles import Styles
+        if not passwords or len(passwords) == 0:
+            from src.gui.styles.styles import Styles
             
             empty_frame = QFrame()
             empty_frame.setStyleSheet("background: transparent; border: none;")
             empty_layout = QVBoxLayout(empty_frame)
-            empty_layout.setContentsMargins(0, 60, 0, 60)
-            empty_layout.setSpacing(16)
+            empty_layout.setContentsMargins(0, 80, 0, 80)
+            empty_layout.setSpacing(20)
             empty_layout.setAlignment(Qt.AlignCenter)
             
-            empty_icon = QLabel("🔐")
-            empty_icon.setStyleSheet("font-size: 64px; background: transparent;")
+            empty_icon = QLabel("🔒")
+            empty_icon.setStyleSheet("font-size: 80px; background: transparent;")
             empty_icon.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(empty_icon)
             
             empty_text = QLabel("Aucun mot de passe")
-            empty_text.setStyleSheet("""
-                color: white;
-                font-size: 20px;
-                font-weight: 600;
+            empty_text.setStyleSheet(f"""
+                color: {Styles.TEXT_PRIMARY};
+                font-size: 22px;
+                font-weight: bold;
                 background: transparent;
             """)
             empty_text.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(empty_text)
             
-            empty_desc = QLabel("Ajoutez votre premier mot de passe")
-            empty_desc.setStyleSheet("""
-                color: rgba(148, 163, 184, 0.8);
-                font-size: 13px;
+            empty_desc = QLabel("Cliquez sur 'Nouveau Mot de Passe' pour commencer à sécuriser vos comptes")
+            empty_desc.setStyleSheet(f"""
+                color: {Styles.TEXT_MUTED};
+                font-size: 14px;
                 background: transparent;
             """)
             empty_desc.setAlignment(Qt.AlignCenter)
+            empty_desc.setWordWrap(True)
+            empty_desc.setMaximumWidth(400)
             empty_layout.addWidget(empty_desc)
             
-            self.grid_layout.addWidget(empty_frame, 0, 0, 1, 2)
+            self.grid_layout.addWidget(empty_frame)
             return
 
-        # Display in 2-column grid
-        for i, pwd in enumerate(self.filtered_passwords):
-            row = i // 2
-            col = i % 2
-            
+        # Create single column layout (vertical scrolling only)
+        for pwd in self.filtered_passwords:
             card = PasswordCard(pwd)
+            # Forward 2FA signals
+            card.request_2fa_for_copy.connect(self.request_2fa_for_copy.emit)
+            card.request_2fa_for_view.connect(self.request_2fa_for_view.emit)
+            # Regular signals
             card.copy_clicked.connect(self.copy_password.emit)
             card.view_clicked.connect(self.view_password.emit)
             card.edit_clicked.connect(self.edit_password.emit)
             card.delete_clicked.connect(self.delete_password.emit)
             card.favorite_clicked.connect(self.favorite_password.emit)
             
-            self.grid_layout.addWidget(card, row, col)
+            # Center the card
+            card_wrapper = QWidget()
+            card_layout = QHBoxLayout(card_wrapper)
+            card_layout.setContentsMargins(0, 0, 0, 0)
+            card_layout.addStretch()
+            card_layout.addWidget(card)
+            card_layout.addStretch()
+            
+            self.grid_layout.addWidget(card_wrapper)
+        
+        self.grid_layout.addStretch()
 
     def on_search(self, text):
-        query = text.strip().lower()
-        
-        if not query:
+        t = text.strip().lower()
+        if not t:
             self.apply_filter(self.current_filter)
             return
-        
-        filtered = [
-            p for p in self.passwords
-            if (query in p.get('site_name', '').lower()
-                or query in p.get('username', '').lower())
-        ]
-        
+        filtered = [p for p in self.passwords
+                    if (t in p.get('site_name', '').lower()
+                        or t in p.get('username', '').lower()
+                        or t in p.get('category', '').lower())]
         self.load_passwords(filtered)
