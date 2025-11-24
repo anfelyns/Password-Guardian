@@ -1,17 +1,19 @@
 # ==========================================================
-# SecureVault - GUI Modals (Complete Fixed Version)
+# SecureVault - GUI Modals (Fixed Version)
 # ==========================================================
 
 from PyQt5.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QFormLayout, QCheckBox, QComboBox, QWidget, QFrame, QMessageBox,
-    QApplication, QProgressBar, QSizePolicy
+    QApplication, QProgressBar, QSizePolicy, QTextEdit
 )
+
 from PyQt5.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer
 from PyQt5.QtGui import QFont
 import random, string, re
 from datetime import datetime
 from src.gui.styles.styles import Styles
+import webbrowser
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -42,36 +44,36 @@ class PasswordStrengthChecker:
         elif length >= 8:
             score += 1
         else:
-            feedback.append("Use at least 8 characters")
+            feedback.append("Utilisez au moins 8 caractères")
         
         # Character variety
         if re.search(r'[a-z]', password):
             score += 1
         else:
-            feedback.append("Add lowercase letters")
+            feedback.append("Ajoutez des minuscules")
         
         if re.search(r'[A-Z]', password):
             score += 1
         else:
-            feedback.append("Add uppercase letters")
+            feedback.append("Ajoutez des majuscules")
         
         if re.search(r'\d', password):
             score += 1
         else:
-            feedback.append("Add numbers")
+            feedback.append("Ajoutez des chiffres")
         
         if re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
             score += 1
         else:
-            feedback.append("Add special characters")
+            feedback.append("Ajoutez des caractères spéciaux")
         
         # Determine strength level
         if score >= 5:
-            return "strong", score, ["Strong password!"]
+            return "strong", score, ["Mot de passe fort !"]
         elif score >= 3:
-            return "medium", score, feedback or ["Good password"]
+            return "medium", score, feedback or ["Bon mot de passe"]
         else:
-            return "weak", score, feedback or ["Weak password"]
+            return "weak", score, feedback or ["Mot de passe faible"]
     
     @staticmethod
     def generate_strong_password(length=16):
@@ -114,7 +116,7 @@ class PasswordStrengthWidget(QWidget):
         layout.addWidget(self.progress)
         
         # Status label
-        self.label = QLabel("Enter a password")
+        self.label = QLabel("Entrez un mot de passe")
         self.label.setStyleSheet(f"color: {Styles.TEXT_MUTED}; font-size: 12px; background: transparent;")
         layout.addWidget(self.label)
     
@@ -133,7 +135,7 @@ class PasswordStrengthWidget(QWidget):
         color = colors.get(strength, Styles.TEXT_MUTED)
         
         if not password:
-            self.label.setText("Enter a password")
+            self.label.setText("Entrez un mot de passe")
             self.label.setStyleSheet(f"color: {Styles.TEXT_MUTED}; font-size: 12px; background: transparent;")
         else:
             self.label.setText(f"{strength.capitalize()}: {', '.join(feedback)}")
@@ -192,7 +194,7 @@ class LoginModal(QDialog):
         form = QVBoxLayout()
         form.setSpacing(18)
 
-        # Email - FIXED
+        # Email
         lbl = QLabel("📧 Adresse e-mail")
         lbl.setStyleSheet(f"color: {Styles.TEXT_SECONDARY}; font-size: 13px; font-weight: normal; background: transparent;")
         form.addWidget(lbl)
@@ -315,7 +317,7 @@ class RegisterModal(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("SecureVault - Inscription")
-        self.setFixedSize(500, 680)
+        self.setFixedSize(500, 750)
         self.setModal(True)
         self.init_ui()
 
@@ -537,7 +539,7 @@ class RegisterModal(QDialog):
         self.accept()
 
 
-# ==================== ADD PASSWORD MODAL ====================
+# ==================== ADD PASSWORD MODAL (SANS "Nom du site") ====================
 
 class AddPasswordModal(QDialog):
     password_added = pyqtSignal(dict)
@@ -545,7 +547,7 @@ class AddPasswordModal(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Ajouter un mot de passe")
-        self.setFixedSize(500, 650)
+        self.setFixedSize(550, 680)
         self.setModal(True)
         self.init_ui()
 
@@ -560,12 +562,13 @@ class AddPasswordModal(QDialog):
         layout.setContentsMargins(40, 40, 40, 40)
         layout.setSpacing(16)
 
+        # Header
         head = QHBoxLayout()
         icon = QLabel("🔐")
         icon.setStyleSheet("font-size:30px; background: transparent;")
         title = QLabel("Nouveau Mot de Passe")
         title.setFont(QFont("Segoe UI", 22, QFont.Bold))
-        title.setStyleSheet(Styles.get_label_style(22))
+        title.setStyleSheet(f"color:{Styles.TEXT_PRIMARY}; background:transparent;")
         head.addWidget(icon)
         head.addWidget(title)
         head.addStretch()
@@ -574,34 +577,66 @@ class AddPasswordModal(QDialog):
         form = QVBoxLayout()
         form.setSpacing(12)
 
-        lab = QLabel("🌐 Nom du site")
-        lab.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_SECONDARY) + "; background: transparent;")
-        self.site_input = QLineEdit()
-        style_line_edit(self.site_input)
-        self.site_input.setPlaceholderText("ex: google.com, github.com...")
-        form.addWidget(lab)
-        form.addWidget(self.site_input)
+        # Website URL
+        lab_url = QLabel("🌐 URL du site web")
+        lab_url.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:14px; background:transparent;")
+        self.url_input = QLineEdit()
+        self.url_input.setMinimumHeight(48)
+        self.url_input.setFont(QFont("Segoe UI", 12))
+        self.url_input.setStyleSheet(Styles.get_input_style())
+        self.url_input.setPlaceholderText("https://example.com/login")
+        form.addWidget(lab_url)
+        
+        url_row = QHBoxLayout()
+        url_row.addWidget(self.url_input)
+        
+        # Open URL button
+        self.open_url_btn = QPushButton("🔗")
+        self.open_url_btn.setFixedSize(48, 48)
+        self.open_url_btn.setToolTip("Ouvrir le site dans le navigateur")
+        self.open_url_btn.setCursor(Qt.PointingHandCursor)
+        self.open_url_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(59, 130, 246, 0.15);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 10px;
+                font-size: 18px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(59, 130, 246, 0.25);
+                border: 1px solid rgba(59, 130, 246, 0.5);
+            }}
+        """)
+        self.open_url_btn.clicked.connect(self.open_website)
+        url_row.addWidget(self.open_url_btn)
+        form.addLayout(url_row)
 
+        # Email/Username
         lab2 = QLabel("📧 Email / Identifiant")
-        lab2.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_SECONDARY) + "; background: transparent;")
+        lab2.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:14px; background:transparent;")
         self.email_input = QLineEdit()
-        style_line_edit(self.email_input)
+        self.email_input.setMinimumHeight(48)
+        self.email_input.setFont(QFont("Segoe UI", 12))
+        self.email_input.setStyleSheet(Styles.get_input_style())
         self.email_input.setPlaceholderText("votre@email.com ou nom d'utilisateur")
         form.addWidget(lab2)
         form.addWidget(self.email_input)
 
+        # Password
         lab3 = QLabel("🔒 Mot de passe")
-        lab3.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_SECONDARY) + "; background: transparent;")
+        lab3.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:14px; background:transparent;")
         row = QHBoxLayout()
         self.pwd_input = QLineEdit()
         self.pwd_input.setEchoMode(QLineEdit.Password)
-        style_line_edit(self.pwd_input)
+        self.pwd_input.setMinimumHeight(48)
+        self.pwd_input.setFont(QFont("Segoe UI", 12))
+        self.pwd_input.setStyleSheet(Styles.get_input_style())
         self.pwd_input.setPlaceholderText("Saisissez ou générez un mot de passe")
         self.toggle_pwd_btn = QPushButton("👁️")
-        self.toggle_pwd_btn.setFixedSize(40, 40)
+        self.toggle_pwd_btn.setFixedSize(48, 48)
         self.toggle_pwd_btn.setCheckable(True)
         self.toggle_pwd_btn.setStyleSheet("""
-            QPushButton { background-color: rgba(255,255,255,0.1); border:none; border-radius:8px; }
+            QPushButton { background-color: rgba(255,255,255,0.1); border:none; border-radius:10px; }
             QPushButton:checked { background-color: rgba(59,130,246,0.3); }
         """)
         self.toggle_pwd_btn.toggled.connect(
@@ -612,14 +647,17 @@ class AddPasswordModal(QDialog):
         form.addWidget(lab3)
         form.addLayout(row)
 
+        # Generate password section
         gen = QHBoxLayout()
         self.generate_checkbox = QCheckBox("🎲 Générer un mot de passe sécurisé")
-        self.generate_checkbox.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_PRIMARY) + "; background: transparent;")
+        self.generate_checkbox.setStyleSheet(f"color:{Styles.TEXT_PRIMARY}; font-size:14px; background:transparent;")
         self.generate_checkbox.toggled.connect(self.toggle_password_generation)
         gen.addWidget(self.generate_checkbox)
 
-        self.generate_btn = AnimatedButton("Générer")
+        self.generate_btn = QPushButton("Générer")
         self.generate_btn.setVisible(False)
+        self.generate_btn.setMinimumHeight(36)
+        self.generate_btn.setCursor(Qt.PointingHandCursor)
         self.generate_btn.clicked.connect(self.generate_password)
         self.generate_btn.setStyleSheet(Styles.get_button_style(primary=False))
         gen.addWidget(self.generate_btn)
@@ -631,26 +669,58 @@ class AddPasswordModal(QDialog):
         form.addWidget(self.strength_widget)
         form.addSpacing(8)
 
+        # Category
         cl = QLabel("📁 Catégorie")
-        cl.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_SECONDARY) + "; background: transparent;")
+        cl.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:14px; background:transparent;")
         self.category_combo = QComboBox()
         self.category_combo.addItems(["👤 Personnel", "💼 Travail", "💳 Finance", "🎮 Jeux", "📚 Étude", "📂 Autre"])
-        self.category_combo.setMinimumHeight(44)
+        self.category_combo.setMinimumHeight(48)
         self.category_combo.setFont(QFont("Segoe UI", 12))
         self.category_combo.setStyleSheet(Styles.get_input_style())
         form.addWidget(cl)
         form.addWidget(self.category_combo)
 
         layout.addLayout(form)
+        layout.addSpacing(10)
 
+        # Auto-fill instructions
+        info_frame = QFrame()
+        info_frame.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(59, 130, 246, 0.1);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 12px;
+                padding: 12px;
+            }}
+        """)
+        info_layout = QVBoxLayout(info_frame)
+        info_layout.setContentsMargins(8, 8, 8, 8)
+        
+        info_title = QLabel("💡 Remplissage automatique")
+        info_title.setStyleSheet(f"color:{Styles.BLUE_SECONDARY}; font-size:13px; font-weight:bold; background:transparent;")
+        info_layout.addWidget(info_title)
+        
+        info_text = QLabel(
+            "Après avoir enregistré ce mot de passe, utilisez le bouton 🔗 "
+            "pour ouvrir le site et remplir automatiquement vos identifiants."
+        )
+        info_text.setWordWrap(True)
+        info_text.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:11px; background:transparent;")
+        info_layout.addWidget(info_text)
+        
+        layout.addWidget(info_frame)
+
+        # Buttons
         btns = QHBoxLayout()
         btns.setSpacing(12)
-        cancel = AnimatedButton("❌ Annuler")
+        cancel = QPushButton("❌ Annuler")
         cancel.setStyleSheet(Styles.get_button_style(primary=False))
         cancel.setMinimumHeight(48)
-        save = AnimatedButton("💾 Enregistrer le mot de passe")
+        cancel.setCursor(Qt.PointingHandCursor)
+        save = QPushButton("💾 Enregistrer le mot de passe")
         save.setStyleSheet(Styles.get_button_style(primary=True))
         save.setMinimumHeight(48)
+        save.setCursor(Qt.PointingHandCursor)
         cancel.clicked.connect(self.reject)
         save.clicked.connect(self.on_save)
         btns.addWidget(cancel)
@@ -673,18 +743,43 @@ class AddPasswordModal(QDialog):
             self.pwd_input.style().polish(self.pwd_input)
 
     def generate_password(self):
-        pwd = PasswordStrengthChecker.generate_strong_password()
+        """Generate a strong 16-character password"""
+        chars = string.ascii_letters + string.digits + "!@#$%^&*"
+        pwd = ''.join(random.choice(chars) for _ in range(16))
         self.pwd_input.setText(pwd)
         self.strength_widget.update_strength(pwd)
 
+    def open_website(self):
+        """Open the website URL in default browser"""
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "URL manquante", "Veuillez saisir l'URL du site web.")
+            return
+        
+        # Add https:// if no protocol
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        try:
+            webbrowser.open(url)
+            QMessageBox.information(
+                self, 
+                "Site ouvert", 
+                "✅ Le site a été ouvert dans votre navigateur.\n\n"
+                "Astuce: Après l'enregistrement, vous pourrez utiliser "
+                "le bouton 🔗 sur chaque carte pour ouvrir et remplir automatiquement."
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Erreur", f"Impossible d'ouvrir l'URL: {str(e)}")
+
     def on_save(self):
-        """Save password with proper category mapping"""
-        site = self.site_input.text().strip()
+        """Save password - Extract site name from URL automatically"""
+        url = self.url_input.text().strip()
         user = self.email_input.text().strip()
         pwd = self.pwd_input.text().strip()
         
-        if not site:
-            QMessageBox.warning(self, "Erreur", "Veuillez saisir un nom de site")
+        if not url:
+            QMessageBox.warning(self, "Erreur", "Veuillez saisir l'URL du site web")
             return
         if not user:
             QMessageBox.warning(self, "Erreur", "Veuillez saisir un email/identifiant")
@@ -692,6 +787,20 @@ class AddPasswordModal(QDialog):
         if not pwd:
             QMessageBox.warning(self, "Erreur", "Veuillez saisir un mot de passe")
             return
+        
+        # Extract site name from URL
+        site_name = url
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url if url.startswith(('http://', 'https://')) else f'https://{url}')
+            domain = parsed.netloc or parsed.path
+            # Remove www. and extract main domain
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            # Take first part before first dot as site name
+            site_name = domain.split('.')[0].capitalize() if domain else url
+        except:
+            site_name = url.split('/')[0].split('.')[0].capitalize()
         
         category_map = {
             "👤 Personnel": "personal",
@@ -706,7 +815,8 @@ class AddPasswordModal(QDialog):
         category = category_map.get(display_cat, "personal")
         
         self.password_added.emit({
-            'site_name': site,
+            'site_name': site_name,
+            'site_url': url,
             'username': user,
             'password': pwd,
             'category': category
@@ -809,7 +919,6 @@ class ViewPasswordModal(QDialog):
         if decrypted:
             self._decrypted_pwd = decrypted
         else:
-            # if no api_client or decryption failed, show stored plaintext if any, else error message
             self._decrypted_pwd = decrypted or (encrypted if encrypted and len(encrypted) < 128 else "Erreur de déchiffrement")
 
         self.val_pwd = QLabel(self._decrypted_pwd)
@@ -921,10 +1030,9 @@ class ViewPasswordModal(QDialog):
             self.val_pwd.setText(bullets)
 
     def copy_password(self):
-        """Copy decrypted password to clipboard (prefer decrypted via api_client)"""
+        """Copy decrypted password to clipboard"""
         pwd_to_copy = self._decrypted_pwd
         if not pwd_to_copy:
-            # fallback to stored encrypted/plain value
             pwd_to_copy = self.password_data.get('encrypted_password', '') or self.password_data.get('password', '')
         if pwd_to_copy:
             QApplication.clipboard().setText(pwd_to_copy)
@@ -1098,7 +1206,7 @@ class ForgotPasswordDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mot de passe oublié")
         self.setModal(True)
-        self.setFixedSize(450, 450)
+        self.setFixedSize(500, 550)
 
         self.auth = auth_mgr
         self.remaining = 0
@@ -1110,8 +1218,10 @@ class ForgotPasswordDialog(QDialog):
 
         self.setStyleSheet(f"""
             QDialog {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {Styles.PRIMARY_BG}, stop:1 {Styles.SECONDARY_BG});
-                border: 1px solid rgba(255,255,255,0.1); border-radius: 25px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                    stop:0 {Styles.PRIMARY_BG}, stop:1 {Styles.SECONDARY_BG});
+                border: 1px solid rgba(255,255,255,0.1); 
+                border-radius: 25px;
             }}
         """)
 
@@ -1124,7 +1234,7 @@ class ForgotPasswordDialog(QDialog):
         header.setAlignment(Qt.AlignCenter)
         header.setSpacing(10)
         
-        icon = QLabel("🔓")
+        icon = QLabel("🔐")
         icon.setStyleSheet("font-size:46px; background: transparent;")
         
         self.title_label = QLabel("Étape 1: Adresse e-mail")
@@ -1144,8 +1254,9 @@ class ForgotPasswordDialog(QDialog):
         lbl_email.setStyleSheet(f"color: {Styles.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         
         self.email = QLineEdit()
-        style_line_edit(self.email)
+        self.email.setMinimumHeight(48)
         self.email.setPlaceholderText("votre@email.com")
+        self.email.setStyleSheet(Styles.get_input_style())
         
         self.btn_send_code = AnimatedButton("📨 Envoyer le code")
         self.btn_send_code.setStyleSheet(Styles.get_button_style(primary=True))
@@ -1165,14 +1276,16 @@ class ForgotPasswordDialog(QDialog):
         s2_layout = QVBoxLayout(self.step2_widget)
         s2_layout.setSpacing(12)
         
-        lbl_code = QLabel("📱 Code de vérification")
+        lbl_code = QLabel("🔑 Code de vérification")
         lbl_code.setStyleSheet(f"color: {Styles.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         
         self.code = QLineEdit()
-        style_line_edit(self.code)
-        self.code.setPlaceholderText("Entrez le code à 6 chiffres")
+        self.code.setMinimumHeight(48)
+        self.code.setPlaceholderText("000000")
         self.code.setMaxLength(6)
         self.code.setAlignment(Qt.AlignCenter)
+        self.code.setFont(QFont("Courier New", 18, QFont.Bold))
+        self.code.setStyleSheet(Styles.get_input_style())
         
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: rgba(255,255,255,0.60); font-size: 12px; background: transparent;")
@@ -1201,17 +1314,19 @@ class ForgotPasswordDialog(QDialog):
         lbl_new1.setStyleSheet(f"color: {Styles.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         
         self.new1 = QLineEdit()
-        style_line_edit(self.new1)
+        self.new1.setMinimumHeight(48)
         self.new1.setPlaceholderText("Créez un mot de passe fort")
         self.new1.setEchoMode(QLineEdit.Password)
+        self.new1.setStyleSheet(Styles.get_input_style())
         
         lbl_new2 = QLabel("✅ Confirmer le mot de passe")
         lbl_new2.setStyleSheet(f"color: {Styles.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         
         self.new2 = QLineEdit()
-        style_line_edit(self.new2)
+        self.new2.setMinimumHeight(48)
         self.new2.setPlaceholderText("Confirmez votre mot de passe")
         self.new2.setEchoMode(QLineEdit.Password)
+        self.new2.setStyleSheet(Styles.get_input_style())
         
         self.btn_reset_password = AnimatedButton("💾 Réinitialiser le mot de passe")
         self.btn_reset_password.setStyleSheet(Styles.get_button_style(primary=True))
@@ -1242,14 +1357,25 @@ class ForgotPasswordDialog(QDialog):
             QMessageBox.warning(self, "Email manquant", "Veuillez saisir votre e-mail.")
             return
         
-        ok = self.auth.send_reset_code(email)
-        if ok:
-            self.email_for_reset = email
-            QMessageBox.information(self, "Code envoyé", "Un code de vérification a été envoyé à votre adresse email.")
-            self._go_to_step(2)
-            self._start_cooldown()
-        else:
-            QMessageBox.warning(self, "Email introuvable", "Aucun compte trouvé avec cet email.")
+        if '@' not in email or '.' not in email:
+            QMessageBox.warning(self, "Email invalide", "Veuillez saisir une adresse e-mail valide.")
+            return
+        
+        try:
+            ok = self.auth.send_reset_code(email)
+            if ok:
+                self.email_for_reset = email
+                QMessageBox.information(self, "Code envoyé", 
+                    f"✅ Un code de vérification a été envoyé à:\n{email}\n\n"
+                    "Vérifiez votre boîte mail (et les spams).")
+                self._go_to_step(2)
+                self._start_cooldown()
+            else:
+                QMessageBox.warning(self, "Email introuvable", 
+                    "Aucun compte trouvé avec cet email.\n\n"
+                    "Vérifiez l'orthographe ou créez un nouveau compte.")
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur", f"Impossible d'envoyer le code:\n{str(e)}")
 
     def _verify_code(self):
         code = self.code.text().strip()
@@ -1257,10 +1383,16 @@ class ForgotPasswordDialog(QDialog):
             QMessageBox.warning(self, "Code invalide", "Veuillez saisir un code à 6 chiffres.")
             return
         
-        if self.auth.verify_reset_code(self.email_for_reset, code):
-            self._go_to_step(3)
-        else:
-            QMessageBox.warning(self, "Code invalide", "Le code saisi est invalide ou a expiré.")
+        try:
+            if self.auth.verify_reset_code(self.email_for_reset, code):
+                QMessageBox.information(self, "Code vérifié", "✅ Code correct! Créez votre nouveau mot de passe.")
+                self._go_to_step(3)
+            else:
+                QMessageBox.warning(self, "Code invalide", 
+                    "Le code saisi est invalide ou a expiré.\n\n"
+                    "Demandez un nouveau code.")
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur", f"Erreur de vérification:\n{str(e)}")
 
     def _reset_password(self):
         n1 = self.new1.text()
@@ -1270,24 +1402,32 @@ class ForgotPasswordDialog(QDialog):
         if not n1 or not n2:
             QMessageBox.warning(self, "Champs vides", "Veuillez remplir tous les champs.")
             return
+        
         if n1 != n2:
             QMessageBox.warning(self, "Erreur", "Les mots de passe ne correspondent pas.")
             return
+        
         if len(n1) < 8:
-            QMessageBox.warning(self, "Mot de passe trop court", "Le mot de passe doit contenir au moins 8 caractères.")
+            QMessageBox.warning(self, "Mot de passe trop court", 
+                "Le mot de passe doit contenir au moins 8 caractères.")
             return
         
-        ok = self.auth.update_password_with_code(self.email_for_reset, code, n1)
-        if ok:
-            QMessageBox.information(
-                self, 
-                "Succès", 
-                "✅ Votre mot de passe a été réinitialisé avec succès!\n\n"
-                "Vous pouvez maintenant vous connecter avec votre nouveau mot de passe."
-            )
-            self.accept()
-        else:
-            QMessageBox.warning(self, "Erreur", "Une erreur est survenue lors de la réinitialisation.")
+        try:
+            ok = self.auth.update_password_with_code(self.email_for_reset, code, n1)
+            if ok:
+                QMessageBox.information(
+                    self, 
+                    "Succès", 
+                    "🎉 Votre mot de passe a été réinitialisé avec succès!\n\n"
+                    "Vous pouvez maintenant vous connecter avec votre nouveau mot de passe."
+                )
+                self.accept()
+            else:
+                QMessageBox.warning(self, "Erreur", 
+                    "Une erreur est survenue lors de la réinitialisation.\n\n"
+                    "Le code a peut-être expiré. Recommencez le processus.")
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur", f"Erreur lors de la réinitialisation:\n{str(e)}")
 
     def _go_to_step(self, step):
         self.current_step = step
@@ -1302,9 +1442,11 @@ class ForgotPasswordDialog(QDialog):
         elif step == 2:
             self.title_label.setText("Étape 2: Vérification du code")
             self.step2_widget.setVisible(True)
+            self.code.setFocus()
         elif step == 3:
             self.title_label.setText("Étape 3: Nouveau mot de passe")
             self.step3_widget.setVisible(True)
+            self.new1.setFocus()
 
     def _tick(self):
         self.remaining -= 1
@@ -1313,7 +1455,7 @@ class ForgotPasswordDialog(QDialog):
             self.btn_send_code.setEnabled(True)
             self.status_label.setText("")
         else:
-            self.status_label.setText(f"⏱️ Renvoyer le code disponible dans {self.remaining}s")
+            self.status_label.setText(f"⏱️ Renvoyer le code dans {self.remaining}s")
 
     def _start_cooldown(self):
         self.remaining = self.COOLDOWN
@@ -1321,7 +1463,15 @@ class ForgotPasswordDialog(QDialog):
         self.timer.start(1000)
 
 
-# ==================== EDIT PROFILE MODAL ====================
+# Also add this AnimatedButton class if it doesn't exist in your modals.py:
+class AnimatedButton(QPushButton):
+    """Button with hover animation"""
+    
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+# ==================== EDIT PROFILE MODAL (FIXED) ====================
 
 class EditProfileModal(QDialog):
     """Edit user profile - name, email, master password"""
@@ -1468,7 +1618,7 @@ class EditProfileModal(QDialog):
         new_row.addWidget(self.toggle_new_btn)
         form.addLayout(new_row)
 
-        # Strength indicator (FIXED: Now visible)
+        # Strength indicator
         self.strength_widget = PasswordStrengthWidget()
         self.new_pwd_input.textChanged.connect(self.strength_widget.update_strength)
         form.addWidget(self.strength_widget)

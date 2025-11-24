@@ -1,0 +1,42 @@
+# =============================================================================
+# Password Guardian - Requirements
+# =============================================================================
+
+# ---- GUI Framework ----
+PyQt5==5.15.10
+
+# ---- Database & ORM ----
+SQLAlchemy==2.0.23
+alembic==1.13.0
+mysql-connector-python==8.2.0
+PyMySQL==1.1.0
+
+# ---- Web Framework (Backend API) ----
+Flask==3.0.0
+Flask-CORS==4.0.0
+
+# ---- Security & Encryption ----
+cryptography==41.0.7
+pycryptodome==3.19.0
+
+# ---- HTTP Client ----
+requests==2.31.0
+
+# ---- Auto-fill Functionality ----
+pyautogui==0.9.54
+pyperclip==1.8.2
+
+# ---- Development & Environment ----
+python-dotenv==1.0.0
+
+# =============================================================================
+# Installation Instructions:
+# =============================================================================
+# 
+# Install all requirements:
+#   pip install -r requirements.txt
+#
+# Or install individually:
+#   pip install PyQt5 SQLAlchemy mysql-connector-python
+#   pip install Flask Flask-CORS cryptography requests
+#   pip install pyautogui pyperclip

@@ -2,24 +2,24 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
 )
-from PyQt5.QtCore import QTimer
-from ...auth.auth_manager import AuthManager
+from PyQt5.QtCore import QTimer, QThreadPool
+
+from auth_manager import AuthManager
+from src.gui.components.threading_utils import TaskWorker
 
 
 class LoginDialog(QDialog):
-    """Login window -> send 2FA -> verify. Always passes EMAIL for 2FA verification."""
+    """Login window -> send 2FA -> verify (email)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Connexion – SecureVault")
         self.setModal(True)
-        self.resize(400, 210)
+        self.resize(420, 220)
 
-        self.auth = AuthManager(
-            host='localhost', user='root',
-            password='inessouai2005_', database='password_guardian', port=3306
-        )
+        self.auth = AuthManager()      # ✅ ORM version (no args)
         self.user_info = None
+        self.threadpool = QThreadPool.globalInstance()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -36,7 +36,6 @@ class LoginDialog(QDialog):
         layout.addWidget(QLabel("Mot de passe"))
         layout.addWidget(self.pass_edit)
 
-        # buttons row
         row = QHBoxLayout()
         self.btn_login = QPushButton("Se connecter")
         self.btn_forgot = QPushButton("Mot de passe oublié ?")
@@ -46,34 +45,49 @@ class LoginDialog(QDialog):
         row.addWidget(self.btn_cancel)
         layout.addLayout(row)
 
-        self.btn_login.clicked.connect(self._do_login)
+        self.btn_login.clicked.connect(self._on_login_clicked)
         self.btn_forgot.clicked.connect(self._forgot)
         self.btn_cancel.clicked.connect(self.reject)
 
-    def _do_login(self):
+    # threaded login
+    def _on_login_clicked(self):
         email = self.email_edit.text().strip()
         pw = self.pass_edit.text()
-
         if not email:
             QMessageBox.warning(self, "Champ vide", "Veuillez saisir votre email.")
             return
 
-        try:
-            res = self.auth.authenticate(email, pw)
-        except Exception as e:
-            QMessageBox.critical(self, "Erreur", f"Échec de connexion:\n{e}")
+        self.btn_login.setEnabled(False)
+        self.btn_login.setText("Connexion...")
+
+        worker = TaskWorker(self.auth.authenticate, email, pw)
+        worker.signals.finished.connect(self._on_login_result)
+        worker.signals.error.connect(self._on_login_error)
+        self.threadpool.start(worker)
+
+    def _on_login_result(self, resp: dict):
+        self.btn_login.setEnabled(True)
+        self.btn_login.setText("Se connecter")
+
+        if resp.get("error"):
+            QMessageBox.critical(self, "Erreur", resp["error"])
             return
 
-        if not res.get("2fa_sent"):
-            QMessageBox.critical(self, "Erreur", "Échec de l'envoi du code 2FA.")
+        if resp.get("2fa_sent"):
+            d = Verify2FADialog(self.auth, email=self.email_edit.text().strip(), parent=self)
+            if d.exec_():
+                self.user_info = resp.get("user")
+                self.accept()
             return
 
-        d = Verify2FADialog(self.auth, email=email, parent=self)
-        if d.exec_():
-            self.user_info = res["user"]
-            self.accept()
-        else:
-            self.reject()
+        # If you ever allow direct login without 2FA:
+        self.user_info = resp.get("user")
+        self.accept()
+
+    def _on_login_error(self, message: str):
+        self.btn_login.setEnabled(True)
+        self.btn_login.setText("Se connecter")
+        QMessageBox.critical(self, "Erreur", "Échec de connexion:\n" + message)
 
     def _forgot(self):
         d = ForgotPasswordDialog(self.auth, parent=self)
@@ -82,7 +96,6 @@ class LoginDialog(QDialog):
 
 class Verify2FADialog(QDialog):
     """2FA dialog (email-based) with 60s resend cooldown."""
-
     COOLDOWN = 60
 
     def __init__(self, auth_mgr: AuthManager, email: str, parent=None):
@@ -93,6 +106,7 @@ class Verify2FADialog(QDialog):
 
         self.auth = auth_mgr
         self.email = email
+        self.threadpool = QThreadPool.globalInstance()
 
         self.remaining = self.COOLDOWN
         self.timer = QTimer(self)
@@ -145,14 +159,25 @@ class Verify2FADialog(QDialog):
     def _resend(self):
         if not self.btn_resend.isEnabled():
             return
-        try:
-            self.auth.authenticate(self.email, "")
+        self.btn_resend.setEnabled(False)
+        self.status_lbl.setText("Renvoi en cours…")
+        worker = TaskWorker(self.auth.send_2fa_code, self.email, None, "login")
+        worker.signals.finished.connect(self._on_resend_done)
+        worker.signals.error.connect(self._on_resend_error)
+        self.threadpool.start(worker)
+
+    def _on_resend_done(self, ok):
+        if ok:
             QMessageBox.information(self, "Envoyé", "Nouveau code envoyé.")
-        except Exception as e:
-            QMessageBox.critical(self, "Erreur", f"Échec du renvoi:\n{e}")
-            return
+        else:
+            QMessageBox.warning(self, "Erreur", "Échec de l'envoi du code.")
         self._start_cooldown()
 
+    def _on_resend_error(self, message: str):
+        QMessageBox.critical(self, "Erreur", "Échec de l'envoi du code:\n" + message)
+        self._start_cooldown()
+
+    # cooldown utils
     def _start_cooldown(self):
         self.remaining = self.COOLDOWN
         self.btn_resend.setEnabled(False)
@@ -176,7 +201,6 @@ class Verify2FADialog(QDialog):
 
 class ForgotPasswordDialog(QDialog):
     """Send reset code → verify → set new password (all email-based)."""
-
     COOLDOWN = 60
 
     def __init__(self, auth_mgr: AuthManager, parent=None):
@@ -238,7 +262,7 @@ class ForgotPasswordDialog(QDialog):
             return
         ok = self.auth.send_reset_code(email)
         if ok:
-            QMessageBox.information(self, "Envoyé", "Code envoyé par e-mail (consultez la console).")
+            QMessageBox.information(self, "Envoyé", "Code envoyé par e-mail.")
             self._start_cooldown()
         else:
             QMessageBox.warning(self, "Introuvable", "Aucun compte avec cet e-mail.")

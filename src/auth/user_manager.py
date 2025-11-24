@@ -3,7 +3,8 @@
 Authentication Manager for SecureVault
 Complete authentication system with PBKDF2 hashing and email verification
 """
-import mysql.connector
+from database.engine import SessionLocal
+from src.database.models import User, Password, OTPCode
 from src.auth.authentication import Authentication, PasswordManager
 
 

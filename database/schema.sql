@@ -105,3 +105,7 @@ CREATE TABLE IF NOT EXISTS `activity_logs` (
   CONSTRAINT `fk_log_user`
     FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE `passwords`
+  ADD FULLTEXT INDEX `ft_idx_site_username` (`site_name`, `username`);
+ALTER TABLE `users`
