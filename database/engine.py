@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 
 # --- DB config (no .env, per your preference) ---
 DB_USER = "root"
-DB_PASS = "inessouai2005_"
+DB_PASS = "yourpassword"
 DB_HOST = "localhost"
 DB_PORT = 3306
 DB_NAME = "password_guardian"
