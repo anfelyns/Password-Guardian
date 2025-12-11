@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # src/gui/components/password_list.py
 
 from PyQt5.QtWidgets import (

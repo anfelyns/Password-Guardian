@@ -1,88 +1,129 @@
+# -*- coding: utf-8 -*-
 # src/security/encryption.py
-# AES-GCM Encryption / Decryption Utilities for Password Guardian
-
-import os
 import base64
+import json
 import hashlib
-from typing import Union
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.fernet import Fernet
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 
-# ================================================================
-#  MASTER KEY HANDLING
-# ================================================================
-def _get_master_key() -> bytes:
+# ============================================================
+# 1️⃣ MASTER PASSWORD (must match backend app.py)
+# ============================================================
+MASTER_PASSWORD = "YourSecretMasterPassword2024!".encode("utf-8")
+SALT = b"salt_password_guardian_2024"
+
+
+# ============================================================
+# 2️⃣ FERNET KEY (used by backend)
+# ============================================================
+def get_fernet_key():
     """
-    Derive a stable 32-byte AES key.
-    You can override it by setting the environment variable PWG_MASTER.
-
-    Example (PowerShell):
-        $env:PWG_MASTER = "my-ultra-secret-key"
+    Generates the same AES-256 Fernet key the backend uses.
     """
-    secret = os.environ.get("PWG_MASTER", "dev-master-password-guardian")
-    return hashlib.blake2b(secret.encode("utf-8"), digest_size=32).digest()
+    kdf = hashlib.pbkdf2_hmac("sha256", MASTER_PASSWORD, SALT, 100000)
+    return base64.urlsafe_b64encode(kdf[:32])
 
 
-# ================================================================
-#  ENCRYPTION
-# ================================================================
-def encrypt_for_storage(plain: Union[str, bytes]) -> str:
+FERNET = Fernet(get_fernet_key())
+
+
+# ============================================================
+# 3️⃣ AES-GCM (old GUI format)
+# ============================================================
+def derive_key():
     """
-    Encrypt plaintext using AES-GCM and return a compact token:
-        gcm1:<base64(nonce|ciphertext|tag)>
+    Derives a 32-byte AES-GCM key from MASTER_PASSWORD.
     """
-    if isinstance(plain, str):
-        plain = plain.encode("utf-8")
+    return hashlib.pbkdf2_hmac("sha256", MASTER_PASSWORD, b"legacy_aes_gcm_salt", 200000)
 
-    key = _get_master_key()
-    aes = AESGCM(key)
-    nonce = os.urandom(12)  # 96-bit nonce
 
-    ct = aes.encrypt(nonce, plain, associated_data=None)
-    blob = nonce + ct
-    token = "gcm1:" + base64.b64encode(blob).decode("ascii")
+AES_GCM_KEY = derive_key()
+
+
+def encrypt_aes_gcm(plaintext: str) -> str:
+    """
+    Encrypts using legacy AES-GCM format used by old GUI.
+    Output format: gcm1:<base64>
+    """
+    plaintext_bytes = plaintext.encode("utf-8")
+    iv = get_random_bytes(12)
+
+    cipher = AES.new(AES_GCM_KEY, AES.MODE_GCM, nonce=iv)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext_bytes)
+
+    payload = iv + tag + ciphertext
+    token = "gcm1:" + base64.b64encode(payload).decode("utf-8")
+
     return token
 
 
-# ================================================================
-#  DECRYPTION
-# ================================================================
-def decrypt_any(token: Union[str, bytes]) -> str:
+def decrypt_aes_gcm(token: str) -> str:
     """
-    Decrypt data previously encrypted with encrypt_for_storage().
-    Raises ValueError with friendly messages if format or key is wrong.
+    Decrypts AES-GCM tokens of format gcm1:<base64>
     """
+    try:
+        b64 = token.split("gcm1:")[1]
+        decoded = base64.b64decode(b64)
+
+        iv = decoded[:12]
+        tag = decoded[12:28]
+        ciphertext = decoded[28:]
+
+        cipher = AES.new(AES_GCM_KEY, AES.MODE_GCM, nonce=iv)
+        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+
+        return plaintext.decode("utf-8")
+
+    except Exception as e:
+        raise ValueError(f"AES-GCM decryption failed: {e}")
+
+
+# ============================================================
+# 4️⃣ AUTO-DETECT DECRYPT ENGINE
+# ============================================================
+def decrypt_any(token: str) -> str:
+    """
+    AUTO-DETECT encryption format and decrypt accordingly.
+    """
+    if not token:
+        raise ValueError("Empty token cannot be decrypted")
+
+    # Convert bytes → str
     if isinstance(token, bytes):
         token = token.decode("utf-8", errors="ignore")
 
-    if not token:
-        raise ValueError("Empty token")
+    # -----------------------------
+    # 1️⃣ Detect Fernet (backend)
+    # Fernet tokens always start with: gAAAAA...
+    # -----------------------------
+    if token.startswith("gAAAA"):
+        try:
+            return FERNET.decrypt(token.encode("utf-8")).decode("utf-8")
+        except Exception as e:
+            raise ValueError(f"Fernet decryption failed: {e}")
 
-    # ---- GCM format ---------------------------------------------------------
+    # -----------------------------
+    # 2️⃣ Detect AES-GCM (old GUI)
+    # -----------------------------
     if token.startswith("gcm1:"):
-        b64 = token.split("gcm1:", 1)[1]
-        try:
-            blob = base64.b64decode(b64)
-        except Exception as e:
-            raise ValueError(f"Invalid base64 payload: {e}")
+        return decrypt_aes_gcm(token)
 
-        if len(blob) < 28:
-            raise ValueError("Invalid GCM blob length")
+    # -----------------------------
+    # Unknown / corrupted
+    # -----------------------------
+    raise ValueError("Unknown encryption format.")
 
-        nonce = blob[:12]
-        ct_tag = blob[12:]
 
-        key = _get_master_key()
-        aes = AESGCM(key)
-
-        try:
-            pt = aes.decrypt(nonce, ct_tag, associated_data=None)
-        except Exception as e:
-            msg = str(e)
-            if "Authentication" in msg or "tag" in msg or "MAC" in msg:
-                raise ValueError("MAC check failed")
-            raise ValueError(msg)
-        return pt.decode("utf-8")
-
-    # ---- Unknown format -----------------------------------------------------
-    raise ValueError("Unknown encryption format")
+# ============================================================
+# 5️⃣ UNIVERSAL ENCRYPT (GUI USES FERNET BY DEFAULT)
+# ============================================================
+def encrypt_for_storage(plaintext: str) -> str:
+    """
+    Encrypt using FERNET (same as backend).
+    """
+    try:
+        return FERNET.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+    except Exception as e:
+        raise ValueError(f"Fernet encryption failed: {e}")

@@ -1,7 +1,4 @@
-# ==========================================================
-# SecureVault - GUI Modals (Fixed Version)
-# ==========================================================
-
+# -*- coding: utf-8 -*-
 from PyQt5.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QFormLayout, QCheckBox, QComboBox, QWidget, QFrame, QMessageBox,
@@ -12,11 +9,10 @@ from PyQt5.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QTime
 from PyQt5.QtGui import QFont
 import random, string, re
 from datetime import datetime
+from src.auth.auth_manager import AuthManager
 from src.gui.styles.styles import Styles
 import webbrowser
 
-
-# ==================== HELPER FUNCTIONS ====================
 
 def style_line_edit(line_edit):
     """Apply consistent styling to QLineEdit widgets"""
@@ -289,23 +285,22 @@ class LoginModal(QDialog):
     def show_forgot_password(self):
         """Open forgot password dialog"""
         from src.auth.auth_manager import AuthManager
-        
-        auth = AuthManager(
-            host='localhost',
-            user='root',
-            password='inessouai2005_',
-            database='password_guardian',
-            port=3306
-        )
-        
+        from src.gui.components.auth_dialogs import ForgotPasswordDialog
+
+        auth = AuthManager()  # No parameters needed
+
         dlg = ForgotPasswordDialog(auth, parent=self)
         result = dlg.exec_()
-        
+
         if result == QDialog.Accepted:
             self.email_input.clear()
             self.password_input.clear()
-            self.error_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: bold; background: transparent;")
-            self.error_label.setText("✅ Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe.")
+            self.error_label.setStyleSheet(
+                "color: #10b981; font-size: 12px; font-weight: bold; background: transparent;"
+            )
+            self.error_label.setText(
+                "✅ Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe."
+            )
 
 
 # ==================== REGISTER MODAL ====================
@@ -778,6 +773,7 @@ class AddPasswordModal(QDialog):
         user = self.email_input.text().strip()
         pwd = self.pwd_input.text().strip()
         
+        # Validation
         if not url:
             QMessageBox.warning(self, "Erreur", "Veuillez saisir l'URL du site web")
             return
@@ -802,6 +798,7 @@ class AddPasswordModal(QDialog):
         except:
             site_name = url.split('/')[0].split('.')[0].capitalize()
         
+        # Map display category to backend category
         category_map = {
             "👤 Personnel": "personal",
             "💼 Travail": "work",
@@ -814,13 +811,17 @@ class AddPasswordModal(QDialog):
         display_cat = self.category_combo.currentText()
         category = category_map.get(display_cat, "personal")
         
-        self.password_added.emit({
+        # Emit with 'password' key instead of 'encrypted_password'
+        payload = {
             'site_name': site_name,
             'site_url': url,
             'username': user,
-            'password': pwd,
+            'password': pwd,  # Corrected key
             'category': category
-        })
+        }
+        
+        print(f"📤 Emitting password_added with payload: {payload}")
+        self.password_added.emit(payload)
         self.accept()
 
 
@@ -832,7 +833,7 @@ class ViewPasswordModal(QDialog):
         self.password_data = password_data or {}
         self.api_client = api_client
         self.setWindowTitle(f"Mot de passe - {self.password_data.get('site_name','')}")
-        self.setFixedSize(480, 380)
+        self.setFixedSize(480, 400)
         self.setModal(True)
         self._decrypted_pwd = None
         self._is_visible = True
@@ -867,9 +868,11 @@ class ViewPasswordModal(QDialog):
         info = QVBoxLayout()
         info.setSpacing(18)
 
-        # Username
+        # Username/Email section
         username_section = QVBoxLayout()
         username_section.setSpacing(6)
+        
+        # FIXED: Proper label for username
         lbl_id = QLabel("📧 Identifiant / Email")
         lbl_id.setStyleSheet(Styles.get_label_style(12, Styles.TEXT_MUTED) + "; background: transparent;")
 
@@ -886,10 +889,11 @@ class ViewPasswordModal(QDialog):
         username_section.addWidget(val_id)
         info.addLayout(username_section)
 
-        # Password
+        # Password section
         password_section = QVBoxLayout()
         password_section.setSpacing(6)
 
+        # FIXED: Proper label for password
         lbl_pwd = QLabel("🔒 Mot de passe")
         lbl_pwd.setStyleSheet(Styles.get_label_style(12, Styles.TEXT_MUTED) + "; background: transparent;")
 
@@ -906,20 +910,9 @@ class ViewPasswordModal(QDialog):
         pwd_layout.setContentsMargins(8, 8, 8, 8)
         pwd_layout.setSpacing(10)
 
-        # Try to decrypt right away (if api_client provided)
-        encrypted = self.password_data.get('encrypted_password', '') or self.password_data.get('password', '')
-        decrypted = None
-        if self.api_client and encrypted:
-            try:
-                decrypted = self.api_client.decrypt_password(encrypted)
-            except Exception:
-                decrypted = None
-
-        # Fallbacks
-        if decrypted:
-            self._decrypted_pwd = decrypted
-        else:
-            self._decrypted_pwd = decrypted or (encrypted if encrypted and len(encrypted) < 128 else "Erreur de déchiffrement")
+        # Get the plain password (already decrypted by backend)
+        plain_password = self.password_data.get('encrypted_password', '') or self.password_data.get('password', '')
+        self._decrypted_pwd = plain_password
 
         self.val_pwd = QLabel(self._decrypted_pwd)
         self.val_pwd.setStyleSheet(f"""

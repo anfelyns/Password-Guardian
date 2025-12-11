@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # backend_api/models.py
 from sqlalchemy import (
     Column, Integer, String, Text, Enum, Boolean,

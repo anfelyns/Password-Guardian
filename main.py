@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # main.py
 import os, subprocess, sys, time, runpy
 
@@ -34,7 +35,7 @@ def start_gui():
 
 if __name__ == "__main__":
     proc = start_backend()
-    print("Backend starting on http://127.0.0.1:5001 ...")
+    print("Backend starting on http://127.0.0.1:5000 ...")
     time.sleep(1.5)
     try:
         start_gui()

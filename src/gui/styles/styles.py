@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 class Styles:
     # Couleurs principales
     PRIMARY_BG = "#0a1628"

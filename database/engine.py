@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # database/engine.py
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
