@@ -49,7 +49,7 @@ class AuthManager:
         self.email_cfg = {
             "smtp_server": "smtp.gmail.com",
             "smtp_port": 587,
-            "sender_email": "inessouai2005@gmail.com",
+            "sender_email": "youremail@gmail.com",
             "sender_password": "jouckunpvjzxnskx",
             "sender_name": "SecureVault",
         }
