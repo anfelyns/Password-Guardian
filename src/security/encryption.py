@@ -9,14 +9,14 @@ from Crypto.Random import get_random_bytes
 
 
 # ============================================================
-# 1️⃣ MASTER PASSWORD (must match backend app.py)
+# MASTER PASSWORD
 # ============================================================
 MASTER_PASSWORD = "YourSecretMasterPassword2024!".encode("utf-8")
 SALT = b"salt_password_guardian_2024"
 
 
 # ============================================================
-# 2️⃣ FERNET KEY (used by backend)
+# FERNET KEY (used by backend)
 # ============================================================
 def get_fernet_key():
     """
@@ -30,7 +30,7 @@ FERNET = Fernet(get_fernet_key())
 
 
 # ============================================================
-# 3️⃣ AES-GCM (old GUI format)
+# AES-GCM (old GUI format)
 # ============================================================
 def derive_key():
     """
@@ -81,7 +81,7 @@ def decrypt_aes_gcm(token: str) -> str:
 
 
 # ============================================================
-# 4️⃣ AUTO-DETECT DECRYPT ENGINE
+# AUTO-DETECT DECRYPT ENGINE
 # ============================================================
 def decrypt_any(token: str) -> str:
     """
@@ -95,7 +95,7 @@ def decrypt_any(token: str) -> str:
         token = token.decode("utf-8", errors="ignore")
 
     # -----------------------------
-    # 1️⃣ Detect Fernet (backend)
+    # Detect Fernet (backend)
     # Fernet tokens always start with: gAAAAA...
     # -----------------------------
     if token.startswith("gAAAA"):
@@ -105,7 +105,7 @@ def decrypt_any(token: str) -> str:
             raise ValueError(f"Fernet decryption failed: {e}")
 
     # -----------------------------
-    # 2️⃣ Detect AES-GCM (old GUI)
+    #  Detect AES-GCM (old GUI)
     # -----------------------------
     if token.startswith("gcm1:"):
         return decrypt_aes_gcm(token)
@@ -117,7 +117,7 @@ def decrypt_any(token: str) -> str:
 
 
 # ============================================================
-# 5️⃣ UNIVERSAL ENCRYPT (GUI USES FERNET BY DEFAULT)
+# UNIVERSAL ENCRYPT (GUI USES FERNET BY DEFAULT)
 # ============================================================
 def encrypt_for_storage(plaintext: str) -> str:
     """
