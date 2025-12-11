@@ -11,7 +11,7 @@ from datetime import datetime
 DB_CONFIG = {
     'host': 'localhost',
     'user': 'root',
-    'password': 'inessouai2005_',
+    'password': 'hatiyourpassword',
     'database': 'password_guardian',
     'port': 3306
 }
