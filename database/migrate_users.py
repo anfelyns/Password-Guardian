@@ -8,7 +8,7 @@ def migrate_existing_users():
     conn = mysql.connector.connect(
         host="localhost",
         user="root",
-        password="inessouai2005_",
+        password="hatiyourpassword",
         database="password_guardian",
         port=3306
     )
