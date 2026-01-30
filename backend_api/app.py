@@ -9,6 +9,7 @@ import re
 import base64
 import hashlib
 from cryptography.fernet import Fernet
+import requests
 
 # -------------------------------------------------------------------
 # Flask init
@@ -20,7 +21,7 @@ CORS(app)
 # Database configuration
 # -------------------------------------------------------------------
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "hatiyourpassword")
+DB_PASS = os.getenv("DB_PASS", "ines2004ines")
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = os.getenv("DB_PORT", "3306")
 DB_NAME = os.getenv("DB_NAME", "password_guardian")
@@ -40,6 +41,7 @@ Base = declarative_base()
 # -------------------------------------------------------------------
 MASTER_PASSWORD = "YourSecretMasterPassword2024!"
 
+
 def get_fernet_key():
     """Generate Fernet-compatible AES-256 key"""
     kdf = hashlib.pbkdf2_hmac(
@@ -50,15 +52,19 @@ def get_fernet_key():
     )
     return base64.urlsafe_b64encode(kdf[:32])
 
+
 cipher = Fernet(get_fernet_key())
+
 
 def encrypt_password(plain: str) -> str:
     """Encrypt plaintext password"""
     return cipher.encrypt(plain.encode("utf-8")).decode("utf-8")
 
+
 def decrypt_password(enc: str) -> str:
     """Decrypt ciphertext password"""
     return cipher.decrypt(enc.encode("utf-8")).decode("utf-8")
+
 
 # -------------------------------------------------------------------
 # Database model (Password table)
@@ -87,6 +93,7 @@ class Password(Base):
                           onupdate=func.current_timestamp())
     created_at = Column(TIMESTAMP, server_default=func.current_timestamp())
 
+
 # -------------------------------------------------------------------
 # Utilities
 # -------------------------------------------------------------------
@@ -103,12 +110,54 @@ def calculate_strength(pwd: str):
     if score <= 4: return "medium"
     return "strong"
 
+
+# -------------------------------------------------------------------
+# PASSWORD COMPROMISE CHECK (HaveIBeenPwned API)
+# -------------------------------------------------------------------
+def check_password_breach(password: str) -> tuple[bool, int]:
+    """
+    Vérifie si le mot de passe a été compromis dans des fuites de données
+    Utilise l'API HaveIBeenPwned (sans envoyer le mot de passe en clair)
+
+    Retourne: (is_compromised, breach_count)
+    """
+    try:
+        # Hash le mot de passe en SHA-1
+        sha1_hash = hashlib.sha1(password.encode('utf-8')).hexdigest().upper()
+
+        # On envoie seulement les 5 premiers caractères (k-anonymity)
+        prefix = sha1_hash[:5]
+        suffix = sha1_hash[5:]
+
+        # Appel à l'API HaveIBeenPwned
+        url = f"https://api.pwnedpasswords.com/range/{prefix}"
+        response = requests.get(url, timeout=5)
+
+        if response.status_code == 200:
+            # Cherche le suffixe dans la réponse
+            for line in response.text.splitlines():
+                hash_suffix, count = line.split(':')
+                if hash_suffix == suffix:
+                    return True, int(count)
+
+            return False, 0
+        else:
+            # Si l'API ne répond pas, on suppose que c'est safe
+            print(f"⚠️ API HIBP non disponible: {response.status_code}")
+            return False, 0
+
+    except Exception as e:
+        print(f"❌ Erreur vérification HIBP: {e}")
+        return False, 0
+
+
 # -------------------------------------------------------------------
 # HEALTH CHECK
 # -------------------------------------------------------------------
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+
 
 # -------------------------------------------------------------------
 # ADD PASSWORD
@@ -127,6 +176,10 @@ def add_password():
 
         if not all([user_id, site_name, username, plain_password]):
             return jsonify({"error": "Missing required fields"}), 400
+
+        is_compromised, breach_count = check_password_breach(plain_password)
+        if is_compromised:
+            print(f"⚠️ WARNING: Password found in {breach_count} data breaches!")
 
         encrypted = encrypt_password(plain_password)
         strength = calculate_strength(plain_password)
@@ -162,6 +215,7 @@ def add_password():
         print("❌ Add password error:", e)
         return jsonify({"error": str(e)}), 500
 
+
 # -------------------------------------------------------------------
 # GET ALL PASSWORDS FOR USER
 # -------------------------------------------------------------------
@@ -193,6 +247,7 @@ def get_passwords(user_id):
         print("❌ Get passwords error:", e)
         return jsonify({"error": str(e)}), 500
 
+
 # -------------------------------------------------------------------
 # REVEAL PASSWORD (Decrypt)
 # -------------------------------------------------------------------
@@ -221,6 +276,7 @@ def reveal(password_id):
     except Exception as e:
         print("❌ Reveal decrypt failed:", e)
         return jsonify({"error": "Failed to decrypt password"}), 500
+
 
 # -------------------------------------------------------------------
 # UPDATE PASSWORD
@@ -263,6 +319,7 @@ def update_password(pid):
         print("❌ Update error:", e)
         return jsonify({"error": str(e)}), 500
 
+
 # -------------------------------------------------------------------
 # DELETE PASSWORD
 # -------------------------------------------------------------------
@@ -283,6 +340,7 @@ def delete_password(pid):
         print("❌ Delete error:", e)
         return jsonify({"error": str(e)}), 500
 
+
 # -------------------------------------------------------------------
 # TOGGLE FAVORITE STATUS
 # -------------------------------------------------------------------
@@ -290,24 +348,56 @@ def delete_password(pid):
 def toggle_favorite(pid):
     try:
         print(f"\n🌟 Toggling favorite for password ID={pid}")
-        
+
         with SessionLocal() as session:
             pwd = session.query(Password).filter(Password.id == pid).first()
-            
+
             if not pwd:
                 return jsonify({"error": "Password not found"}), 404
-            
+
             pwd.favorite = not bool(pwd.favorite)
             pwd.last_updated = datetime.utcnow()
             session.commit()
-            
+
             return jsonify({
-                "ok": True, 
+                "ok": True,
                 "favorite": bool(pwd.favorite)
             }), 200
-            
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# -------------------------------------------------------------------
+# CHECK PASSWORD ENDPOINT (pour vérifier sans stocker)
+# -------------------------------------------------------------------
+@app.route("/check-password", methods=["POST"])
+def check_password():
+    """
+    Vérifie si un mot de passe est compromis sans le stocker
+    Utile pour le frontend avant l'enregistrement
+    """
+    try:
+        data = request.get_json()
+        password = data.get("password", "")
+
+        if not password:
+            return jsonify({"error": "No password provided"}), 400
+
+        is_compromised, breach_count = check_password_breach(password)
+        strength = calculate_strength(password)
+
+        return jsonify({
+            "is_compromised": is_compromised,
+            "breach_count": breach_count,
+            "strength": strength,
+            "length": len(password),
+            "recommendation": "Changez ce mot de passe immédiatement !" if is_compromised else "Mot de passe sécurisé"
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # -------------------------------------------------------------------
 # RUN BACKEND

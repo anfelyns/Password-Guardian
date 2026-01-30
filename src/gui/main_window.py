@@ -22,7 +22,7 @@ from src.gui.autofill import (
     simple_copy_paste_method
 )
 # Services
-from src.backend.api_client import APIClient
+from src.auth.backend.api_client import APIClient
 from src.auth.auth_manager import AuthManager
 from src.security.encryption import encrypt_for_storage, decrypt_any
 
@@ -485,7 +485,12 @@ class MainWindow(QMainWindow):
                     "Ã¢Å“â€¦ Votre email a ÃƒÂ©tÃƒÂ© vÃƒÂ©rifiÃƒÂ© avec succÃƒÂ¨s!\n\n"
                     "Vous pouvez maintenant vous connecter."
                 )
-                self._auth_flow()
+                user = {
+                    "id": user_id,
+                    "email": email,
+                    "username": email.split('@')[0]
+                }
+                self._finalize_login(user)
             else:
                 QMessageBox.warning(
                     dlg,
@@ -608,7 +613,11 @@ class MainWindow(QMainWindow):
                 counts[c] += 1
             if p.get("favorite"):
                 counts["favorites"] += 1
-        
+
+        counts["strong"] = sum(1 for p in visible if p.get("strength") == "strong")
+        counts["medium"] = sum(1 for p in visible if p.get("strength") == "medium")
+        counts["weak"] = sum(1 for p in visible if p.get("strength") == "weak")
+
         self.sidebar.update_counts(counts)
 
     def on_category_changed(self, cat: str):
@@ -1088,7 +1097,7 @@ class MainWindow(QMainWindow):
 
         if not self._confirm_sensitive("visualisation"):
             return
-        
+
         try:
             plain = self._decrypt_from_backend(int(pid))
         except Exception as e:
@@ -1112,7 +1121,7 @@ class MainWindow(QMainWindow):
 
         if not self._confirm_sensitive("copie"):
             return
-        
+
         try:
             plain = self._decrypt_from_backend(int(pid))
         except Exception as e:
