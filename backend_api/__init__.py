@@ -1,0 +1,1 @@
+# Marks backend_api as a package so `python -m backend_api.app` works.
