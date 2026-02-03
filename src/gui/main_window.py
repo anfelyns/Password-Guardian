@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 import threading
+import json
+import os
+from datetime import datetime, timedelta
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
-    QMessageBox, QApplication, QPushButton, QDialog, QGridLayout, QLineEdit, QMenu, QAction
+    QMessageBox, QApplication, QPushButton, QDialog, QGridLayout, QLineEdit, QMenu, QAction,
+    QFileDialog, QComboBox, QStackedLayout
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont
 
 # UI + components
@@ -22,9 +26,14 @@ from src.gui.autofill import (
     simple_copy_paste_method
 )
 # Services
-from src.auth.backend.api_client import APIClient
-from src.auth.auth_manager import AuthManager
-from src.security.encryption import encrypt_for_storage, decrypt_any
+from src.backend.api_client import APIClient
+from src.auth.auth_manager import AuthManager, verify_password
+from src.security.encryption import (
+    encrypt_for_storage,
+    decrypt_any,
+    encrypt_vault_payload,
+    decrypt_vault_payload,
+)
 
 
 # ----------------------------- Small helpers -----------------------------
@@ -62,6 +71,7 @@ class Quick2FADialog(QDialog):
 
         title = QLabel("Vérification de sécurité")
         title.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        title.setAlignment(Qt.AlignLeft)
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(f"color:{Styles.TEXT_PRIMARY};")
         lay.addWidget(title)
@@ -109,6 +119,8 @@ class UserProfileWidget(QWidget):
     logout_clicked = pyqtSignal()
     show_statistics = pyqtSignal()
     edit_profile_clicked = pyqtSignal()
+    show_devices_clicked = pyqtSignal()
+    lock_now_clicked = pyqtSignal()
 
     def __init__(self, username: str, initials: str, parent=None):
         super().__init__(parent)
@@ -162,9 +174,17 @@ class UserProfileWidget(QWidget):
         act_edit.triggered.connect(self.edit_profile_clicked.emit)
         m.addAction(act_edit)
 
-        act_stats = QAction("Mes statistiques", self)
+        act_stats = QAction("Statistiques", self)
         act_stats.triggered.connect(self.show_statistics.emit)
         m.addAction(act_stats)
+
+        act_devices = QAction("Appareils & sessions", self)
+        act_devices.triggered.connect(self.show_devices_clicked.emit)
+        m.addAction(act_devices)
+
+        act_lock = QAction("Verrouiller", self)
+        act_lock.triggered.connect(self.lock_now_clicked.emit)
+        m.addAction(act_lock)
 
         m.addSeparator()
 
@@ -184,10 +204,16 @@ class MainWindow(QMainWindow):
         # State
         self.current_user = None
         self._all_passwords = []
+        self._locked_user = None
+        self._lock_timeout_ms = 3 * 60 * 1000
+        self._lock_timer = QTimer(self)
+        self._lock_timer.setSingleShot(True)
+        self._lock_timer.timeout.connect(self._lock_due_to_inactivity)
 
         # UI
         self._build_ui()
         self._wire_basic_signals()
+        self._install_inactivity_monitor()
         self._auth_flow()
 
     # ---------------- UI / Theme ----------------
@@ -209,6 +235,28 @@ class MainWindow(QMainWindow):
                 color: white; border-radius:8px; padding:6px 14px;
             }
             QMessageBox QPushButton:hover { background-color: #1D4ED8; }
+            QScrollArea { background: transparent; }
+            QScrollArea::viewport { background: transparent; }
+            QScrollBar:vertical {
+                background: rgba(255,255,255,0.04);
+                width: 8px;
+                margin: 6px 0 6px 0;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(59,130,246,0.6);
+                min-height: 22px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(59,130,246,0.85);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
         """)
 
         central = QWidget(self)
@@ -230,6 +278,80 @@ class MainWindow(QMainWindow):
         head.addWidget(icon)
         head.addWidget(title)
         head.addStretch()
+        actions_wrap = QWidget()
+        actions = QHBoxLayout(actions_wrap)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(8)
+
+        def header_btn(text: str, primary: bool = False) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                Styles.get_button_style(primary)
+                if primary
+                else """
+                    QPushButton {
+                        background: rgba(255,255,255,0.06);
+                        color: #E6EFFB;
+                        border: 1px solid rgba(255,255,255,0.08);
+                        border-radius: 10px;
+                        padding: 4px 10px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover { background: rgba(255,255,255,0.12); }
+                """
+            )
+            return btn
+
+        self.score_badge = header_btn("Score: --%", False)
+        self.score_badge.setEnabled(False)
+        actions.addWidget(self.score_badge)
+
+        btn_stats = header_btn("Statistiques")
+        btn_stats.clicked.connect(self._show_statistics_page)
+        actions.addWidget(btn_stats)
+
+        btn_pw = header_btn("Mots de passe")
+        btn_pw.clicked.connect(self._show_passwords_page)
+        actions.addWidget(btn_pw)
+
+        btn_journal = header_btn("Journal")
+        btn_journal.clicked.connect(self._show_journal_placeholder)
+        actions.addWidget(btn_journal)
+
+        btn_profile = header_btn("Profil")
+        btn_profile.clicked.connect(self._show_edit_profile_modal)
+        actions.addWidget(btn_profile)
+
+        btn_export = header_btn("Export")
+        btn_export.clicked.connect(self._export_encrypted_vault)
+        actions.addWidget(btn_export)
+
+        btn_import = header_btn("Import")
+        btn_import.clicked.connect(self._import_encrypted_vault)
+        actions.addWidget(btn_import)
+
+        self.btn_lock = header_btn("Verrouiller")
+        self._init_lock_menu()
+        actions.addWidget(self.btn_lock)
+
+        btn_logout = header_btn("Déconnexion", True)
+        btn_logout.setStyleSheet("""
+            QPushButton {
+                background: rgba(239, 68, 68, 0.20);
+                color: #fee2e2;
+                border: 1px solid rgba(239, 68, 68, 0.45);
+                border-radius: 10px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QPushButton:hover { background: rgba(239, 68, 68, 0.35); }
+        """)
+        btn_logout.clicked.connect(self.on_logout)
+        actions.addWidget(btn_logout)
+
+        head.addWidget(actions_wrap)
         head.addWidget(uw)
         root.addLayout(head)
 
@@ -243,8 +365,15 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(frame)
         v.setContentsMargins(0, 0, 0, 0)
 
+        self.content_stack = QStackedLayout()
         self.password_list = PasswordList()
-        v.addWidget(self.password_list)
+        self.stats_page = QWidget()
+        self.stats_layout = QVBoxLayout(self.stats_page)
+        self.stats_layout.setContentsMargins(0, 0, 0, 0)
+        self.stats_layout.setSpacing(0)
+        self.content_stack.addWidget(self.password_list)
+        self.content_stack.addWidget(self.stats_page)
+        v.addLayout(self.content_stack)
         body.addWidget(frame, 1)
         root.addLayout(body)
 
@@ -255,6 +384,11 @@ class MainWindow(QMainWindow):
             self.sidebar.category_changed.connect(self.on_category_changed)
         if hasattr(self.sidebar, "add_password_clicked"):
             self.sidebar.add_password_clicked.connect(self._show_add_password_modal)
+        if hasattr(self.sidebar, "stats_clicked"):
+            self.sidebar.stats_clicked.connect(self._show_statistics_page)
+
+        if hasattr(self.sidebar, "stats_clicked"):
+            self.sidebar.stats_clicked.connect(self._show_statistics_page)
 
         # PasswordList signals
         if hasattr(self.password_list, "copy_password"):
@@ -280,14 +414,157 @@ class MainWindow(QMainWindow):
         if hasattr(self.password_list, "request_2fa_for_copy"):
             self.password_list.request_2fa_for_copy.connect(self._handle_2fa_copy)
 
+    # ---------------- Inactivity / Lock ----------------
+    def _install_inactivity_monitor(self):
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
+        self._reset_inactivity_timer()
+
+    def eventFilter(self, obj, event):
+        if event.type() in (
+            QEvent.MouseMove,
+            QEvent.MouseButtonPress,
+            QEvent.KeyPress,
+            QEvent.Wheel,
+            QEvent.TouchBegin,
+        ):
+            self._reset_inactivity_timer()
+        return super().eventFilter(obj, event)
+
+    def _reset_inactivity_timer(self):
+        if self.current_user:
+            self._lock_timer.start(self._lock_timeout_ms)
+
+    def _lock_due_to_inactivity(self):
+        if self.current_user:
+            self._lock_now(show_message=True)
+
+    def _lock_now(self, show_message: bool = False):
+        if not self.current_user:
+            return
+        self._lock_timer.stop()
+        if show_message:
+            QMessageBox.information(self, "Verrouillage", "Coffre verrouillé après inactivité.")
+        self._locked_user = self.current_user
+        self.current_user = None
+        self._all_passwords = []
+        self.password_list.load_passwords([])
+        self._show_passwords_page()
+        self._show_lock_dialog()
+
+    def _apply_lock_timeout(self, minutes: int):
+        self._lock_timeout_ms = int(minutes * 60 * 1000)
+        self._reset_inactivity_timer()
+
+    def _init_lock_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background:#0f1e36; border:1px solid rgba(255,255,255,0.2);
+                    border-radius:10px; padding:8px; }
+            QMenu::item { padding:6px 12px; border-radius:6px; color:#E6EFFB; }
+            QMenu::item:selected { background:rgba(59,130,246,0.25); }
+        """)
+        act_now = QAction("Lock now", self)
+        act_now.triggered.connect(lambda: self._lock_now(show_message=False))
+        menu.addAction(act_now)
+        menu.addSeparator()
+        for m in (2, 3, 5):
+            act = QAction(f"Auto-lock {m} min", self)
+            act.triggered.connect(lambda _=False, mm=m: self._apply_lock_timeout(mm))
+            menu.addAction(act)
+        self.btn_lock.setMenu(menu)
+
+    def _show_lock_dialog(self):
+        if not self._locked_user:
+            return
+        d = QDialog(self)
+        d.setWindowTitle("Verrouillé")
+        d.setFixedSize(480, 300)
+        d.setModal(True)
+        d.setStyleSheet(f"""
+            QDialog {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {Styles.PRIMARY_BG}, stop:1 {Styles.SECONDARY_BG});
+                color: {Styles.TEXT_PRIMARY};
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 20px;
+            }}
+            QLabel {{ color: {Styles.TEXT_PRIMARY}; background: transparent; }}
+        """)
+        lay = QVBoxLayout(d)
+        lay.setContentsMargins(26, 24, 26, 24)
+        lay.setSpacing(16)
+
+        title = QLabel("🔒 Verrouillé")
+        title.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        lay.addWidget(title)
+        subtitle = QLabel("Saisissez votre mot de passe pour déverrouiller")
+        subtitle.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:12px;")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+
+        pwd = QLineEdit()
+        pwd.setEchoMode(QLineEdit.Password)
+        pwd.setMinimumHeight(46)
+        pwd.setStyleSheet(Styles.get_input_style() + "border-radius:14px;")
+        lay.addWidget(pwd)
+
+        row = QHBoxLayout()
+        unlock = QPushButton("Déverrouiller")
+        unlock.setMinimumHeight(44)
+        unlock.setStyleSheet(
+            Styles.get_button_style(True) + "border-radius: 18px; padding: 10px 16px;"
+        )
+        logout = QPushButton("Déconnexion")
+        logout.setMinimumHeight(44)
+        logout.setStyleSheet(
+            Styles.get_button_style(False) + "border-radius: 18px; padding: 10px 16px;"
+        )
+        row.addWidget(unlock)
+        row.addWidget(logout)
+        lay.addLayout(row)
+
+        def _unlock():
+            ok = False
+            try:
+                u = self.auth._user_by_email(self._locked_user.get("email"))
+                if u:
+                    ok = verify_password(u["password_hash"], u["salt"], pwd.text())
+            except Exception:
+                ok = False
+            if ok:
+                self.current_user = self._locked_user
+                self._locked_user = None
+                d.accept()
+                self.load_passwords()
+                self._reset_inactivity_timer()
+            else:
+                QMessageBox.warning(d, "Erreur", "Mot de passe incorrect.")
+
+        def _logout():
+            self._locked_user = None
+            d.reject()
+            self.on_logout()
+
+        unlock.clicked.connect(_unlock)
+        logout.clicked.connect(_logout)
+        d.exec_()
+
     # ---------------- Auth flow ----------------
     def _auth_flow(self):
-        dlg = LoginModal(self)
-        dlg.login_success.connect(self._on_login_attempt)
-        dlg.switch_to_register.connect(self._switch_to_register)
-        res = dlg.exec_()
-        if res != QDialog.Accepted and not self.current_user:
-            QApplication.quit()
+        self.hide()
+        while not self.current_user:
+            dlg = LoginModal(self)
+            dlg.login_success.connect(self._on_login_attempt)
+            dlg.switch_to_register.connect(self._switch_to_register)
+            res = dlg.exec_()
+            if res != QDialog.Accepted and not self.current_user:
+                QApplication.quit()
+                return
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _switch_to_register(self):
         dlg = RegisterModal(self)
@@ -560,12 +837,14 @@ class MainWindow(QMainWindow):
 
         prof = UserProfileWidget(name, initials, self)
         prof.logout_clicked.connect(self.on_logout)
-        prof.show_statistics.connect(self._show_statistics_modal)
+        prof.show_statistics.connect(self._show_statistics_page)
+        prof.show_devices_clicked.connect(self._show_devices_placeholder)
+        prof.lock_now_clicked.connect(lambda: self._lock_now(show_message=False))
         prof.edit_profile_clicked.connect(self._show_edit_profile_modal)
         self.user_box.addWidget(prof)
 
         QTimer.singleShot(0, self.load_passwords)
-        QMessageBox.information(self, "Bienvenue", f"Ã¢Å“â€¦ Bienvenue {name}!")
+        QMessageBox.information(self, "Bienvenue", f"✅ Bienvenue {name}!")
 
     def _show_error_dialog(self, title: str, message: str):
         """Show error message with proper word wrap and sizing"""
@@ -600,6 +879,10 @@ class MainWindow(QMainWindow):
         
         ok, msg, data = self.api_client.get_passwords(self.current_user["id"])
         self._all_passwords = data if ok else []
+        # Normalize trash status from backend (uses trashed_at)
+        for p in self._all_passwords:
+            if p.get("trashed_at"):
+                p["category"] = "trash"
         
         visible = [p for p in self._all_passwords if p.get("category") != "trash"]
         self.password_list.load_passwords(visible)
@@ -618,7 +901,28 @@ class MainWindow(QMainWindow):
         counts["medium"] = sum(1 for p in visible if p.get("strength") == "medium")
         counts["weak"] = sum(1 for p in visible if p.get("strength") == "weak")
 
+        # Dynamic categories from data
+        cat_set = []
+        for p in self._all_passwords:
+            c = (p.get("category") or "").strip()
+            if c and c not in ("trash",):
+                if c not in cat_set:
+                    cat_set.append(c)
+        if hasattr(self.sidebar, "set_categories"):
+            self.sidebar.set_categories(cat_set)
+
         self.sidebar.update_counts(counts)
+        self._update_score_badge(visible)
+        if self.content_stack.currentWidget() == self.stats_page:
+            self._render_stats_page()
+
+    def _update_score_badge(self, visible):
+        total = len(visible)
+        strong = sum(1 for p in visible if p.get("strength") == "strong")
+        medium = sum(1 for p in visible if p.get("strength") == "medium")
+        score = int((strong * 2 + medium) / max(1, total * 2) * 100)
+        if hasattr(self, "score_badge"):
+            self.score_badge.setText(f"Score: {score}%")
 
     def on_category_changed(self, cat: str):
         base = self._all_passwords
@@ -634,7 +938,7 @@ class MainWindow(QMainWindow):
 
     # ---------------- 2FA helper for sensitive actions ----------------
     def _confirm_sensitive(self, purpose: str) -> bool:
-        """Send a 2FA email and verify."""
+        """Send a 2FA email and verify. If unavailable, ask to proceed without it."""
         if not self.current_user:
             return False
         email = self.current_user["email"]
@@ -644,9 +948,16 @@ class MainWindow(QMainWindow):
             sent = self.auth.send_2fa_email(email, purpose)
         if not sent and hasattr(self.auth, "send_2fa_code"):
             sent = self.auth.send_2fa_code(to_email=email, user_id=self.current_user["id"], purpose=purpose)
+
         if not sent:
-            self._show_error_dialog("Erreur", "Impossible d'envoyer le code 2FA")
-            return False
+            resp = QMessageBox.question(
+                self,
+                "2FA indisponible",
+                "Impossible d'envoyer le code 2FA (email non configuré?).\n\nVoulez-vous continuer sans 2FA ?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return resp == QMessageBox.Yes
 
         dlg = Quick2FADialog(email, self)
         verified = {"ok": False}
@@ -665,8 +976,7 @@ class MainWindow(QMainWindow):
                 verified["ok"] = True
                 dlg.accept()
             else:
-                self._show_error_dialog("Erreur", "Code invalide ou expiré"
-)
+                self._show_error_dialog("Erreur", "Code invalide ou expir?")
 
         try:
             dlg.code_verified.disconnect()
@@ -675,6 +985,473 @@ class MainWindow(QMainWindow):
         dlg.code_verified.connect(_verify)
         dlg.exec_()
         return verified["ok"]
+
+    # ---------------- Export / Import ----------------
+    def _prompt_passphrase(self, title: str, confirm: bool = False) -> str | None:
+        d = QDialog(self)
+        d.setWindowTitle(title)
+        d.setFixedSize(420, 220 if confirm else 170)
+        d.setModal(True)
+        d.setStyleSheet(f"""
+            QDialog {{
+                background: {Styles.PRIMARY_BG};
+                color: {Styles.TEXT_PRIMARY};
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 16px;
+            }}
+            QLabel {{ color: {Styles.TEXT_PRIMARY}; background: transparent; }}
+        """)
+        lay = QVBoxLayout(d)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(12)
+
+        lay.addWidget(QLabel("Mot de passe du fichier:"))
+        p1 = QLineEdit()
+        p1.setEchoMode(QLineEdit.Password)
+        p1.setStyleSheet(Styles.get_input_style())
+        lay.addWidget(p1)
+
+        p2 = None
+        if confirm:
+            lay.addWidget(QLabel("Confirmer le mot de passe:"))
+            p2 = QLineEdit()
+            p2.setEchoMode(QLineEdit.Password)
+            p2.setStyleSheet(Styles.get_input_style())
+            lay.addWidget(p2)
+
+        row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.setStyleSheet(Styles.get_button_style(True))
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.setStyleSheet(Styles.get_button_style(False))
+        row.addWidget(ok_btn)
+        row.addWidget(cancel_btn)
+        lay.addLayout(row)
+
+        result = {"value": None}
+
+        def _accept():
+            if confirm and p2 is not None and p1.text() != p2.text():
+                QMessageBox.warning(d, "Erreur", "Les mots de passe ne correspondent pas.")
+                return
+            if not p1.text():
+                QMessageBox.warning(d, "Erreur", "Mot de passe requis.")
+                return
+            result["value"] = p1.text()
+            d.accept()
+
+        ok_btn.clicked.connect(_accept)
+        cancel_btn.clicked.connect(d.reject)
+        d.exec_()
+        return result["value"]
+
+    def _prompt_import_mode(self) -> str | None:
+        d = QDialog(self)
+        d.setWindowTitle("Import - Duplicates")
+        d.setFixedSize(420, 200)
+        d.setModal(True)
+        d.setStyleSheet(f"""
+            QDialog {{
+                background: {Styles.PRIMARY_BG};
+                color: {Styles.TEXT_PRIMARY};
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 16px;
+            }}
+            QLabel {{ color: {Styles.TEXT_PRIMARY}; background: transparent; }}
+        """)
+        lay = QVBoxLayout(d)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(12)
+
+        lay.addWidget(QLabel("Conflits (mÃªme site + identifiant):"))
+        mode = QComboBox()
+        mode.addItems(["Merge", "Skip", "Overwrite"])
+        mode.setStyleSheet(Styles.get_input_style())
+        lay.addWidget(mode)
+
+        row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.setStyleSheet(Styles.get_button_style(True))
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.setStyleSheet(Styles.get_button_style(False))
+        row.addWidget(ok_btn)
+        row.addWidget(cancel_btn)
+        lay.addLayout(row)
+
+        result = {"value": None}
+
+        def _accept():
+            result["value"] = mode.currentText().lower()
+            d.accept()
+
+        ok_btn.clicked.connect(_accept)
+        cancel_btn.clicked.connect(d.reject)
+        d.exec_()
+        return result["value"]
+
+    def _export_encrypted_vault(self):
+        if not self.current_user:
+            return
+        ok, msg, vault = self.api_client.export_vault(self.current_user["id"])
+        if not ok:
+            self._show_error_dialog("Erreur", msg)
+            return
+
+        passphrase = self._prompt_passphrase("Export chiffrÃ© (.pgvault)", confirm=True)
+        if not passphrase:
+            return
+
+        enc = encrypt_vault_payload(vault, passphrase)
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Exporter le coffre", "vault.pgvault", "Password Guardian Vault (*.pgvault)"
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith(".pgvault"):
+            filename += ".pgvault"
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(enc, f, indent=2)
+        QMessageBox.information(self, "Export", "âœ… Export chiffrÃ© terminÃ©.")
+
+    def _import_encrypted_vault(self):
+        if not self.current_user:
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Importer un coffre", "", "Password Guardian Vault (*.pgvault)"
+        )
+        if not filename:
+            return
+
+        passphrase = self._prompt_passphrase("Importer un coffre chiffrÃ©", confirm=False)
+        if not passphrase:
+            return
+
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                blob = json.load(f)
+            vault = decrypt_vault_payload(blob, passphrase)
+        except Exception as e:
+            self._show_error_dialog("Erreur", f"Impossible de dÃ©chiffrer: {e}")
+            return
+
+        items = vault.get("passwords") or []
+        if not isinstance(items, list):
+            self._show_error_dialog("Erreur", "Format de coffre invalide.")
+            return
+
+        mode = self._prompt_import_mode()
+        if not mode:
+            return
+
+        existing = {}
+        for p in self._all_passwords:
+            key = (str(p.get("site_name", "")).strip().lower(), str(p.get("username", "")).strip().lower())
+            if key[0] or key[1]:
+                existing[key] = p
+
+        imported = 0
+        updated = 0
+        skipped = 0
+
+        for it in items:
+            if not it.get("site_name") or not it.get("username") or not it.get("encrypted_password"):
+                continue
+            key = (str(it.get("site_name", "")).strip().lower(), str(it.get("username", "")).strip().lower())
+            match = existing.get(key)
+
+            if match:
+                if mode == "skip":
+                    skipped += 1
+                    continue
+                if mode == "overwrite":
+                    ok, msg = self.api_client.update_password(
+                        match["id"],
+                        {
+                            "site_name": it.get("site_name"),
+                            "site_url": it.get("site_url") or "",
+                            "site_icon": it.get("site_icon") or "ðŸ”’",
+                            "username": it.get("username"),
+                            "encrypted_password": it.get("encrypted_password"),
+                            "category": it.get("category") or "personal",
+                            "strength": it.get("strength") or "medium",
+                            "favorite": bool(it.get("favorite") or False),
+                        },
+                    )
+                    if ok:
+                        updated += 1
+                    else:
+                        skipped += 1
+                    continue
+
+                # merge
+                updates = {}
+                for field in ["site_url", "site_icon", "category", "strength"]:
+                    if not match.get(field) and it.get(field):
+                        updates[field] = it.get(field)
+                if not match.get("favorite") and it.get("favorite"):
+                    updates["favorite"] = True
+                if updates:
+                    ok, msg = self.api_client.update_password(match["id"], updates)
+                    if ok:
+                        updated += 1
+                    else:
+                        skipped += 1
+                else:
+                    skipped += 1
+                continue
+
+            ok, msg, _ = self.api_client.add_password(
+                user_id=self.current_user["id"],
+                site_name=str(it.get("site_name")),
+                username=str(it.get("username")),
+                encrypted_password=str(it.get("encrypted_password")),
+                category=str(it.get("category") or "personal"),
+                site_url=str(it.get("site_url") or ""),
+                site_icon=str(it.get("site_icon") or "ðŸ”’"),
+                strength=str(it.get("strength") or "medium"),
+            )
+            if ok:
+                imported += 1
+            else:
+                skipped += 1
+
+        self.load_passwords()
+        QMessageBox.information(
+            self,
+            "Import terminÃ©",
+            f"AjoutÃ©s: {imported}\nMises Ã  jour: {updated}\nIgnorÃ©s: {skipped}",
+        )
+
+    def _show_devices_placeholder(self):
+        if not self.current_user:
+            QMessageBox.warning(self, "Appareils & sessions", "Utilisateur non connecté.")
+            return
+        ok_s, msg_s, sessions = self.api_client.get_sessions(self.current_user["id"])
+        ok_d, msg_d, devices = self.api_client.get_devices(self.current_user["id"])
+        if not ok_s and not ok_d:
+            QMessageBox.warning(self, "Appareils & sessions", f"Impossible de charger: {msg_s or msg_d}")
+            return
+        try:
+            from src.gui.components.modals import DeviceSessionsModal
+        except Exception:
+            QMessageBox.warning(self, "Appareils & sessions", "Interface indisponible.")
+            return
+
+        items = []
+        for s in sessions or []:
+            items.append({
+                "device_name": s.get("device_info") or "Session",
+                "ip_address": "-",
+                "id": s.get("id"),
+            })
+
+        def _revoke(session_id: int):
+            ok2, _msg = self.api_client.revoke_session(session_id)
+            return ok2
+
+        if not items:
+            items = [{
+                "device_name": "Appareil actuel",
+                "ip_address": "-",
+                "id": None,
+            }]
+        DeviceSessionsModal(items, _revoke, self).exec_()
+
+    def _show_journal_placeholder(self):
+        if not self.current_user:
+            QMessageBox.warning(self, "Journal", "Utilisateur non connecté.")
+            return
+        try:
+            from src.gui.components.modals import AuditLogModal
+        except Exception:
+            QMessageBox.information(self, "Journal", "Journal indisponible pour le moment.")
+            return
+        AuditLogModal(self.current_user["id"], self.auth, self).exec_()
+
+    # ---------------- Stats Page (in main area) ----------------
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+
+    def _show_statistics_page(self):
+        self._render_stats_page()
+        self.content_stack.setCurrentWidget(self.stats_page)
+
+    def _show_passwords_page(self):
+        self.content_stack.setCurrentWidget(self.password_list)
+
+    def _render_stats_page(self):
+        self._clear_layout(self.stats_layout)
+
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(18)
+
+        top = QHBoxLayout()
+        title = QLabel("Mes statistiques")
+        title.setFont(QFont("Segoe UI", 24, QFont.Bold))
+        title.setStyleSheet(f"color:{Styles.TEXT_PRIMARY};")
+        top.addWidget(title)
+        top.addStretch()
+        back_btn = QPushButton("← Retour")
+        back_btn.setStyleSheet(
+            Styles.get_button_style(False)
+            + "padding: 8px 16px; border-radius: 14px; font-weight: 600;"
+        )
+        back_btn.setMinimumHeight(36)
+        back_btn.setCursor(Qt.PointingHandCursor)
+        back_btn.clicked.connect(self._show_passwords_page)
+        top.addWidget(back_btn)
+        lay.addLayout(top)
+
+        passwords = [p for p in self._all_passwords if p.get("category") != "trash"]
+        total = len(passwords)
+        strong = sum(1 for p in passwords if p.get("strength") == "strong")
+        medium = sum(1 for p in passwords if p.get("strength") == "medium")
+        weak = sum(1 for p in passwords if p.get("strength") == "weak")
+        favorites = sum(1 for p in passwords if p.get("favorite"))
+
+        pw_map = {}
+        for p in passwords:
+            tok = p.get("encrypted_password") or ""
+            pw_map[tok] = pw_map.get(tok, 0) + 1
+        reused = sum(1 for p in passwords if pw_map.get(p.get("encrypted_password") or "", 0) > 1)
+
+        old = 0
+        cutoff = datetime.utcnow() - timedelta(days=180)
+        for p in passwords:
+            ts = p.get("last_updated") or p.get("created_at") or ""
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if dt < cutoff:
+                    old += 1
+            except Exception:
+                pass
+
+        pwned = 0
+        score = int((strong * 2 + medium) / max(1, total * 2) * 100)
+        score_color = Styles.STRONG_COLOR if score >= 80 else (
+            Styles.MEDIUM_COLOR if score >= 50 else Styles.WEAK_COLOR
+        )
+
+        cards = QGridLayout()
+        cards.setHorizontalSpacing(16)
+        cards.setVerticalSpacing(16)
+
+        def card(title_text, value_text, color):
+            w = QFrame()
+            w.setStyleSheet("""
+                QFrame {
+                    background: rgba(255,255,255,0.04);
+                    border: 1px solid rgba(255,255,255,0.06);
+                    border-radius: 14px;
+                }
+            """)
+            v = QVBoxLayout(w)
+            v.setContentsMargins(16, 12, 16, 12)
+            v.setSpacing(6)
+            t = QLabel(title_text)
+            t.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:12px;")
+            val = QLabel(str(value_text))
+            val.setStyleSheet(f"color:{color}; font-size:26px; font-weight:800;")
+            v.addWidget(t)
+            v.addWidget(val)
+            return w
+
+        cards.addWidget(card("Total", total, Styles.BLUE_PRIMARY), 0, 0)
+        cards.addWidget(card("Forts", strong, Styles.STRONG_COLOR), 0, 1)
+        cards.addWidget(card("Moyens", medium, Styles.MEDIUM_COLOR), 0, 2)
+        cards.addWidget(card("Faibles", weak, Styles.WEAK_COLOR), 0, 3)
+        cards.addWidget(card("Favoris", favorites, Styles.BLUE_SECONDARY), 1, 0)
+        cards.addWidget(card("Reused", reused, Styles.MEDIUM_COLOR), 1, 1)
+        cards.addWidget(card("Old (180j+)", old, Styles.WEAK_COLOR), 1, 2)
+        cards.addWidget(card("Pwned", pwned, Styles.WEAK_COLOR), 1, 3)
+        lay.addLayout(cards)
+
+        score_wrap = QFrame()
+        score_wrap.setStyleSheet("""
+            QFrame {
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(255,255,255,0.06);
+                border-radius: 12px;
+            }
+        """)
+        sw = QHBoxLayout(score_wrap)
+        sw.setContentsMargins(14, 10, 14, 10)
+        score_label = QLabel("Score de securite")
+        score_label.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:14px;")
+        sw.addWidget(score_label, alignment=Qt.AlignLeft)
+        score_value = QLabel(f"{score}%")
+        score_value.setStyleSheet(f"color:{score_color}; font-size:26px; font-weight:800;")
+        sw.addWidget(score_value, alignment=Qt.AlignRight)
+        lay.addWidget(score_wrap)
+
+        graphs = QGridLayout()
+        graphs.setHorizontalSpacing(18)
+        graphs.setVerticalSpacing(18)
+
+        def bar_row(label, value, color, total_width=260):
+            roww = QHBoxLayout()
+            roww.setSpacing(8)
+            lbl = QLabel(f"{label} ({value})")
+            lbl.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:12px;")
+            bar = QFrame()
+            bar.setFixedHeight(10)
+            bar.setStyleSheet(f"background:{color}; border-radius:5px;")
+            width = total_width if total == 0 else int(total_width * (value / max(1, total)))
+            bar.setFixedWidth(width)
+            roww.addWidget(lbl)
+            roww.addWidget(bar)
+            roww.addStretch(1)
+            return roww
+
+        chart = QFrame()
+        chart.setStyleSheet("""
+            QFrame {
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(255,255,255,0.06);
+                border-radius: 12px;
+            }
+        """)
+        cl = QVBoxLayout(chart)
+        cl.setContentsMargins(16, 14, 16, 14)
+        cl.setSpacing(10)
+        chart_title = QLabel("Repartition des forces")
+        chart_title.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:12px;")
+        cl.addWidget(chart_title)
+        cl.addLayout(bar_row("Forts", strong, Styles.STRONG_COLOR))
+        cl.addLayout(bar_row("Moyens", medium, Styles.MEDIUM_COLOR))
+        cl.addLayout(bar_row("Faibles", weak, Styles.WEAK_COLOR))
+
+        chart2 = QFrame()
+        chart2.setStyleSheet("""
+            QFrame {
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(255,255,255,0.06);
+                border-radius: 12px;
+            }
+        """)
+        c2 = QVBoxLayout(chart2)
+        c2.setContentsMargins(16, 14, 16, 14)
+        c2.setSpacing(10)
+        t2 = QLabel("Hygiene")
+        t2.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:12px;")
+        c2.addWidget(t2)
+        c2.addLayout(bar_row("Reused", reused, Styles.MEDIUM_COLOR, total_width=220))
+        c2.addLayout(bar_row("Old", old, Styles.WEAK_COLOR, total_width=220))
+        c2.addLayout(bar_row("Pwned", pwned, Styles.WEAK_COLOR, total_width=220))
+
+        graphs.addWidget(chart, 0, 0)
+        graphs.addWidget(chart2, 0, 1)
+        lay.addLayout(graphs)
+        lay.addStretch(1)
+
+        self.stats_layout.addWidget(wrap)
 
     def _handle_2fa_view(self, payload: dict):
         if not self._confirm_sensitive("visualisation"):
@@ -688,18 +1465,24 @@ class MainWindow(QMainWindow):
 
     def _decrypt_from_backend(self, password_id: int) -> str:
         """
-        Get PLAIN PASSWORD from backend
-        ⚠️ Backend /reveal endpoint returns PLAIN TEXT (already decrypted)
+        Get plain password from backend reveal.
+        Backend returns stored value; decrypt locally if needed.
         """
-        ok, msg, plain_password = self.api_client.reveal_password(password_id)
+        ok, msg, token = self.api_client.reveal_password(password_id)
         if not ok:
             raise ValueError(msg or "Erreur API")
-        if not plain_password:
+        if not token:
             raise ValueError("Mot de passe vide")
-        
-        # Backend already decrypted it - return as-is
-        print(f"✅ Got plain password from backend (length: {len(plain_password)})")
-        return plain_password
+
+        # If it's an encrypted token, decrypt locally
+        try:
+            if isinstance(token, str) and (token.startswith("gAAAA") or token.startswith("gcm1:")):
+                return decrypt_any(token)
+        except Exception:
+            pass
+
+        # Otherwise treat as plain
+        return token
 
     # ---------------- View / Copy with 2FA ----------------
     def on_view_password(self, payload):
@@ -833,7 +1616,10 @@ class MainWindow(QMainWindow):
 
     # ---------------- CRUD ----------------
     def _show_add_password_modal(self):
-        dlg = AddPasswordModal(self)
+        if not self.current_user or "id" not in self.current_user:
+            QMessageBox.warning(self, "Erreur", "Utilisateur non connecté.")
+            return
+        dlg = AddPasswordModal(self.current_user["id"], self.api_client, self)
 
         def _add(payload: dict):
             """Handle adding a new password"""
@@ -991,15 +1777,8 @@ class MainWindow(QMainWindow):
             if rep != QMessageBox.Yes:
                 return
             
-            # FIXED: Don't send encrypted_password when trashing
-            # Just update category to 'trash'
-            ok, msg = self.api_client.update_password(
-                password_id=pid,
-                updates={
-                    "category": "trash"
-                    # Don't include encrypted_password, username, site_name
-                }
-            )
+            # Move to trash via API endpoint
+            ok, msg = self.api_client.trash_password(pid)
             
             if ok:
                 self.load_passwords()
@@ -1024,14 +1803,8 @@ class MainWindow(QMainWindow):
         if rep != QMessageBox.Yes:
             return
         
-        # FIXED: Only update category, don't touch password field
-        ok, msg = self.api_client.update_password(
-            password_id=pid,
-            updates={
-                "category": "personal"
-                # Don't include encrypted_password, username, site_name
-            }
-        )
+        # Restore via API endpoint
+        ok, msg = self.api_client.restore_password(pid)
         
         if ok:
             self.load_passwords()
@@ -1117,9 +1890,6 @@ class MainWindow(QMainWindow):
 
         if pid is None:
             self._show_error_dialog("Erreur", "Mot de passe introuvable")
-            return
-
-        if not self._confirm_sensitive("copie"):
             return
 
         try:
@@ -1295,91 +2065,7 @@ class MainWindow(QMainWindow):
         ))
     # ---------------- Stats / Profile / Logout ----------------
     def _show_statistics_modal(self):
-        d = QDialog(self)
-        d.setWindowTitle("Ã°Å¸â€œÅ  Statistiques")
-        d.setFixedSize(720, 520)
-        d.setAttribute(Qt.WA_StyledBackground, True)
-        d.setStyleSheet(f"""
-            QDialog {{
-                background: {Styles.PRIMARY_BG};
-                color: {Styles.TEXT_PRIMARY};
-                border: 1px solid rgba(255,255,255,0.08);
-                border-radius: 16px;
-            }}
-            QLabel {{ color: {Styles.TEXT_PRIMARY}; background: transparent; }}
-        """)
-
-        lay = QVBoxLayout(d)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(16)
-
-        title = QLabel("Ã°Å¸â€œÅ  Mes statistiques")
-        title.setFont(QFont("Segoe UI", 22, QFont.Bold))
-        lay.addWidget(title)
-
-        passwords = [p for p in self._all_passwords if p.get('category') != 'trash']
-        total = len(passwords)
-        strong = sum(1 for p in passwords if p.get('strength') == 'strong')
-        medium = sum(1 for p in passwords if p.get('strength') == 'medium')
-        weak = sum(1 for p in passwords if p.get('strength') == 'weak')
-        favorites = sum(1 for p in passwords if p.get('favorite'))
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(14)
-
-        def row(lbl, val, col):
-            l = QLabel(lbl)
-            l.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:15px;")
-            v = QLabel(str(val))
-            v.setStyleSheet(f"color:{col}; font-size:24px; font-weight:700;")
-            return l, v
-
-        r = 0
-        for lbl, val, col in [
-            ("Ã°Å¸â€”â€šÃ¯Â¸Â Total", total, Styles.BLUE_PRIMARY),
-            ("Ã¢Å“â€¦ Forts", strong, Styles.STRONG_COLOR),
-            ("Ã¢Å¡ Ã¯Â¸Â Moyens", medium, Styles.MEDIUM_COLOR),
-            ("Ã¢ÂÅ’ Faibles", weak, Styles.WEAK_COLOR),
-            ("Ã¢Â­Â Favoris", favorites, Styles.BLUE_SECONDARY),
-        ]:
-            l, v = row(lbl, val, col)
-            grid.addWidget(l, r, 0, alignment=Qt.AlignLeft)
-            grid.addWidget(v, r, 1, alignment=Qt.AlignRight)
-            r += 1
-
-        lay.addLayout(grid)
-
-        score_wrap = QWidget()
-        score_wrap.setStyleSheet("""
-            QWidget {
-                background: rgba(255,255,255,0.04);
-                border: 1px solid rgba(255,255,255,0.06);
-                border-radius: 12px;
-            }
-        """)
-        sw = QHBoxLayout(score_wrap)
-        sw.setContentsMargins(14, 10, 14, 10)
-        score_label = QLabel("Ã°Å¸â€ºÂ¡Ã¯Â¸Â Score de sÃƒÂ©curitÃƒÂ©")
-        score_label.setStyleSheet(f"color:{Styles.TEXT_SECONDARY}; font-size:14px;")
-        sw.addWidget(score_label, alignment=Qt.AlignLeft)
-        security_score = int((strong / total) * 100) if total > 0 else 0
-        score_color = Styles.STRONG_COLOR if security_score >= 80 else (
-            Styles.MEDIUM_COLOR if security_score >= 50 else Styles.WEAK_COLOR
-        )
-        score_value = QLabel(f"{security_score}%")
-        score_value.setStyleSheet(f"color:{score_color}; font-size:26px; font-weight:800;")
-        sw.addWidget(score_value, alignment=Qt.AlignRight)
-        lay.addWidget(score_wrap)
-        lay.addStretch(1)
-
-        close_btn = QPushButton("Fermer")
-        close_btn.setStyleSheet(Styles.get_button_style(True))
-        close_btn.setMinimumHeight(44)
-        close_btn.clicked.connect(d.accept)
-        lay.addWidget(close_btn)
-
-        d.exec_()
+        self._show_statistics_page()
 
     def _show_edit_profile_modal(self):
         from src.gui.components.modals import EditProfileModal
@@ -1396,7 +2082,9 @@ class MainWindow(QMainWindow):
                     w.setParent(None)
             prof = UserProfileWidget(self.current_user["username"], self.current_user["initials"], self)
             prof.logout_clicked.connect(self.on_logout)
-            prof.show_statistics.connect(self._show_statistics_modal)
+            prof.show_statistics.connect(self._show_statistics_page)
+            prof.show_devices_clicked.connect(self._show_devices_placeholder)
+            prof.lock_now_clicked.connect(lambda: self._lock_now(show_message=False))
             prof.edit_profile_clicked.connect(self._show_edit_profile_modal)
             self.user_box.addWidget(prof)
 
@@ -1404,7 +2092,7 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def on_logout(self):
-        rep = QMessageBox.question(self, "DÃƒÂ©connection", "Se dÃƒÂ©connecter ?",
+        rep = QMessageBox.question(self, "Déconnexion", "Se déconnecter ?",
                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if rep != QMessageBox.Yes:
             return

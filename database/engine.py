@@ -1,34 +1,64 @@
 # -*- coding: utf-8 -*-
-# database/engine.py
+"""database/engine.py
+
+Pro/uni-friendly DB configuration:
+- Uses DATABASE_URL if provided (MySQL/Postgres/SQLite).
+- Defaults to local SQLite file (runs out-of-the-box, no MySQL required).
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+try:
+    # Load environment variables from project .env if present
+    from dotenv import load_dotenv
+    _project_root = Path(__file__).resolve().parents[1]
+    load_dotenv(_project_root / ".env")
+except Exception:
+    # If python-dotenv isn't available or .env missing, keep defaults
+    pass
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from urllib.parse import quote_plus
 
-# --- DB config (no .env, per your preference) ---
-DB_USER = "root"
-DB_PASS = "hatiyourpassword"
-DB_HOST = "localhost"
-DB_PORT = 3306
-DB_NAME = "password_guardian"
+def _default_sqlite_url() -> str:
+    # store DB file next to main.py (project root)
+    return "sqlite:///password_guardian.db"
 
-#  Use PyMySQL 
-DB_URL = (
-    f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    f"?charset=utf8mb4"
-)
+DATABASE_URL = os.getenv("DATABASE_URL", _default_sqlite_url())
+
+connect_args = {}
+if DATABASE_URL.startswith("sqlite"):
+    # Needed for SQLite with threads (GUI + backend)
+    connect_args = {"check_same_thread": False}
 
 engine = create_engine(
-    DB_URL,
-    echo=False,
+    DATABASE_URL,
+    connect_args=connect_args,
     pool_pre_ping=True,
-    pool_recycle=1800,
-    future=True,
 )
 
-SessionLocal = sessionmaker(
-    bind=engine,
-    autoflush=False,
-    autocommit=False,
-    expire_on_commit=False,
-    future=True,
-)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def init_db() -> None:
+    # Import here to avoid circular imports on module load
+    from database.models import Base
+    Base.metadata.create_all(bind=engine)
+
+    # Lightweight migrations for SQLite (add new columns if missing)
+    if DATABASE_URL.startswith("sqlite"):
+        from sqlalchemy import text
+
+        with engine.begin() as conn:
+            def _has_column(table: str, column: str) -> bool:
+                rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                return any(r[1] == column for r in rows)
+
+            if not _has_column("users", "mfa_enabled"):
+                conn.execute(text("ALTER TABLE users ADD COLUMN mfa_enabled BOOLEAN DEFAULT 0"))
+            if not _has_column("users", "totp_enabled"):
+                conn.execute(text("ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN DEFAULT 0"))
+            if not _has_column("users", "totp_secret"):
+                conn.execute(text("ALTER TABLE users ADD COLUMN totp_secret VARCHAR(64)"))

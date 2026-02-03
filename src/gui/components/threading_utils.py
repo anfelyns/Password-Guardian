@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
+from PyQt5.QtCore import QObject, QRunnable, pyqtSignal, pyqtSlot
 
 
-class TaskSignals(QObject):
+class WorkerSignals(QObject):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
@@ -13,12 +13,13 @@ class TaskWorker(QRunnable):
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
-        self.signals = TaskSignals()
+        self.signals = WorkerSignals()
 
+    @pyqtSlot()
     def run(self):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception as exc:
             self.signals.error.emit(str(exc))
-            return
-        self.signals.finished.emit(result)
+        else:
+            self.signals.finished.emit(result)

@@ -1,406 +1,427 @@
 # -*- coding: utf-8 -*-
-from datetime import datetime
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, TIMESTAMP, func, text
-from sqlalchemy.orm import sessionmaker, declarative_base
-import os
-import re
-import base64
-import hashlib
-from cryptography.fernet import Fernet
-import requests
+"""backend_api/app.py
 
-# -------------------------------------------------------------------
-# Flask init
-# -------------------------------------------------------------------
+Unified backend (Flask) using the shared SQLAlchemy models in /database.
+
+Implements:
+- CRUD for passwords (list/add/update/trash/restore/delete/favorite)
+- Simple reveal (returns stored encrypted_password as-is; client-side decrypt if you use zero-knowledge)
+- Stats endpoint (weak/medium/strong + favorites + trashed + security score)
+- Profile endpoint (get/update username/email)
+- Sessions + devices listing + revoke (optional, for 'pro' feel)
+- Export/Import JSON (for backups / portability)
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from sqlalchemy import select, update, delete
+from sqlalchemy.exc import IntegrityError
+
+from database.engine import SessionLocal, init_db
+from database.models import Password, User, Session, UserDevice, ActivityLog
+
 app = Flask(__name__)
 CORS(app)
-
-# -------------------------------------------------------------------
-# Database configuration
-# -------------------------------------------------------------------
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "ines2004ines")
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = os.getenv("DB_PORT", "3306")
-DB_NAME = os.getenv("DB_NAME", "password_guardian")
-
-engine = create_engine(
-    f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
-    pool_pre_ping=True,
-    pool_recycle=3600,
-    echo=False
-)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# -------------------------------------------------------------------
-# Encryption system
-# -------------------------------------------------------------------
-MASTER_PASSWORD = "YourSecretMasterPassword2024!"
+init_db()
 
 
-def get_fernet_key():
-    """Generate Fernet-compatible AES-256 key"""
-    kdf = hashlib.pbkdf2_hmac(
-        'sha256',
-        MASTER_PASSWORD.encode('utf-8'),
-        b'salt_password_guardian_2024',
-        100000
-    )
-    return base64.urlsafe_b64encode(kdf[:32])
-
-
-cipher = Fernet(get_fernet_key())
-
-
-def encrypt_password(plain: str) -> str:
-    """Encrypt plaintext password"""
-    return cipher.encrypt(plain.encode("utf-8")).decode("utf-8")
-
-
-def decrypt_password(enc: str) -> str:
-    """Decrypt ciphertext password"""
-    return cipher.decrypt(enc.encode("utf-8")).decode("utf-8")
-
-
-# -------------------------------------------------------------------
-# Database model (Password table)
-# MUST match actual MySQL schema
-# -------------------------------------------------------------------
-class Password(Base):
-    __tablename__ = "passwords"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, nullable=False)
-    site_name = Column(String(100), nullable=False)
-    site_url = Column(String(500), nullable=True)
-    site_icon = Column(String(10), default="🔒")
-
-    username = Column(String(255), nullable=False)
-
-    # IMPORTANT: the REAL column name in MySQL
-    encrypted_password = Column(Text, nullable=False)
-
-    category = Column(String(30), default="personal")
-    strength = Column(String(20), default="medium")
-    favorite = Column(Boolean, default=False)
-
-    trashed_at = Column(TIMESTAMP, nullable=True)
-    last_updated = Column(TIMESTAMP, server_default=func.current_timestamp(),
-                          onupdate=func.current_timestamp())
-    created_at = Column(TIMESTAMP, server_default=func.current_timestamp())
-
-
-# -------------------------------------------------------------------
-# Utilities
-# -------------------------------------------------------------------
-def calculate_strength(pwd: str):
-    score = 0
-    if len(pwd) >= 8: score += 1
-    if len(pwd) >= 12: score += 1
-    if re.search(r"[A-Z]", pwd): score += 1
-    if re.search(r"[a-z]", pwd): score += 1
-    if re.search(r"[0-9]", pwd): score += 1
-    if re.search(r"[!@#$%^&*()\-_=+\[\]{};:,.<>/?]", pwd): score += 1
-
-    if score <= 2: return "weak"
-    if score <= 4: return "medium"
-    return "strong"
-
-
-# -------------------------------------------------------------------
-# PASSWORD COMPROMISE CHECK (HaveIBeenPwned API)
-# -------------------------------------------------------------------
-def check_password_breach(password: str) -> tuple[bool, int]:
-    """
-    Vérifie si le mot de passe a été compromis dans des fuites de données
-    Utilise l'API HaveIBeenPwned (sans envoyer le mot de passe en clair)
-
-    Retourne: (is_compromised, breach_count)
-    """
+def _log(db, user_id: int | None, action: str) -> None:
     try:
-        # Hash le mot de passe en SHA-1
-        sha1_hash = hashlib.sha1(password.encode('utf-8')).hexdigest().upper()
-
-        # On envoie seulement les 5 premiers caractères (k-anonymity)
-        prefix = sha1_hash[:5]
-        suffix = sha1_hash[5:]
-
-        # Appel à l'API HaveIBeenPwned
-        url = f"https://api.pwnedpasswords.com/range/{prefix}"
-        response = requests.get(url, timeout=5)
-
-        if response.status_code == 200:
-            # Cherche le suffixe dans la réponse
-            for line in response.text.splitlines():
-                hash_suffix, count = line.split(':')
-                if hash_suffix == suffix:
-                    return True, int(count)
-
-            return False, 0
-        else:
-            # Si l'API ne répond pas, on suppose que c'est safe
-            print(f"⚠️ API HIBP non disponible: {response.status_code}")
-            return False, 0
-
-    except Exception as e:
-        print(f"❌ Erreur vérification HIBP: {e}")
-        return False, 0
+        db.add(ActivityLog(user_id=user_id or 0, action=action))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
-# -------------------------------------------------------------------
-# HEALTH CHECK
-# -------------------------------------------------------------------
-@app.route("/health")
+@app.get("/health")
 def health():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
 
-# -------------------------------------------------------------------
-# ADD PASSWORD
-# -------------------------------------------------------------------
-@app.route("/passwords", methods=["POST"])
-def add_password():
+# --------------------------- PASSWORDS ---------------------------
+
+@app.get("/passwords/<int:user_id>")
+def list_passwords(user_id: int):
+    db = SessionLocal()
     try:
-        data = request.get_json()
-
-        user_id = data.get("user_id")
-        site_name = data.get("site_name")
-        site_url = data.get("site_url", "")
-        username = data.get("username")
-        plain_password = data.get("password")
-        category = data.get("category", "personal")
-
-        if not all([user_id, site_name, username, plain_password]):
-            return jsonify({"error": "Missing required fields"}), 400
-
-        is_compromised, breach_count = check_password_breach(plain_password)
-        if is_compromised:
-            print(f"⚠️ WARNING: Password found in {breach_count} data breaches!")
-
-        encrypted = encrypt_password(plain_password)
-        strength = calculate_strength(plain_password)
-
-        new_pwd = Password(
-            user_id=user_id,
-            site_name=site_name,
-            site_url=site_url,
-            username=username,
-            encrypted_password=encrypted,  # FIXED
-            category=category,
-            strength=strength,
-            favorite=False,
-            created_at=datetime.utcnow(),
-            last_updated=datetime.utcnow()
-        )
-
-        with SessionLocal() as session:
-            session.add(new_pwd)
-            session.commit()
-            session.refresh(new_pwd)
-
-        return jsonify({
-            "id": new_pwd.id,
-            "site_name": new_pwd.site_name,
-            "username": new_pwd.username,
-            "category": new_pwd.category,
-            "strength": new_pwd.strength,
-            "created_at": new_pwd.created_at.isoformat(),
-        }), 201
-
-    except Exception as e:
-        print("❌ Add password error:", e)
-        return jsonify({"error": str(e)}), 500
-
-
-# -------------------------------------------------------------------
-# GET ALL PASSWORDS FOR USER
-# -------------------------------------------------------------------
-@app.route("/passwords/<int:user_id>", methods=["GET"])
-def get_passwords(user_id):
-    try:
-        with SessionLocal() as session:
-            pwds = session.query(Password).filter(
-                Password.user_id == user_id,
-                Password.trashed_at.is_(None)
-            ).all()
+        rows = db.execute(
+            select(Password).where(Password.user_id == user_id).order_by(Password.last_updated.desc())
+        ).scalars().all()
 
         return jsonify([
             {
                 "id": p.id,
+                "user_id": p.user_id,
                 "site_name": p.site_name,
-                "site_url": p.site_url,
-                "site_icon": p.site_icon,
+                "site_url": p.site_url or "",
+                "site_icon": p.site_icon or "🔒",
                 "username": p.username,
+                "encrypted_password": p.encrypted_password,
                 "category": p.category,
                 "strength": p.strength,
-                "favorite": p.favorite,
-                "last_updated": p.last_updated.strftime("%d/%m/%Y"),
+                "favorite": bool(p.favorite),
+                "trashed_at": p.trashed_at.isoformat() if p.trashed_at else None,
+                "last_updated": p.last_updated.isoformat() if p.last_updated else None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
             }
-            for p in pwds
+            for p in rows
         ])
-
-    except Exception as e:
-        print("❌ Get passwords error:", e)
-        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
 
 
-# -------------------------------------------------------------------
-# REVEAL PASSWORD (Decrypt)
-# -------------------------------------------------------------------
-@app.route("/passwords/<int:password_id>/reveal", methods=["GET"])
-def reveal(password_id):
+@app.post("/passwords")
+def add_password():
+    data = request.get_json(force=True) or {}
+    required = ["user_id", "site_name", "username", "encrypted_password"]
+    miss = [k for k in required if not data.get(k)]
+    if miss:
+        return jsonify({"ok": False, "error": f"Missing fields: {', '.join(miss)}"}), 400
+
+    db = SessionLocal()
     try:
-        with SessionLocal() as session:
-            pwd = session.query(Password).filter(Password.id == password_id).first()
+        p = Password(
+            user_id=int(data["user_id"]),
+            site_name=str(data["site_name"]),
+            site_url=str(data.get("site_url") or "") or None,
+            site_icon=str(data.get("site_icon") or "🔒"),
+            username=str(data["username"]),
+            encrypted_password=str(data["encrypted_password"]),
+            category=str(data.get("category") or "personal"),
+            strength=str(data.get("strength") or "medium"),
+            favorite=bool(data.get("favorite") or False),
+            trashed_at=None,
+        )
+        db.add(p)
+        db.commit()
+        _log(db, p.user_id, f"password:add:{p.site_name}")
+        return jsonify({"ok": True, "id": p.id})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
 
-        if not pwd:
-            return jsonify({"error": "Not found"}), 404
 
-        encrypted = pwd.encrypted_password
-        if not encrypted:
-            return jsonify({"error": "No encrypted password stored"}), 500
+@app.put("/passwords/<int:pid>")
+def update_password(pid: int):
+    data = request.get_json(force=True) or {}
+    db = SessionLocal()
+    try:
+        p = db.get(Password, pid)
+        if not p:
+            return jsonify({"ok": False, "error": "Not found"}), 404
 
-        plain = decrypt_password(encrypted)
+        for field in ["site_name", "site_url", "site_icon", "username", "encrypted_password", "category", "strength"]:
+            if field in data and data[field] is not None:
+                setattr(p, field, data[field])
+
+        if "favorite" in data and data["favorite"] is not None:
+            p.favorite = bool(data["favorite"])
+
+        db.commit()
+        _log(db, p.user_id, f"password:update:{p.site_name}")
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.post("/passwords/<int:pid>/trash")
+def trash_password(pid: int):
+    db = SessionLocal()
+    try:
+        p = db.get(Password, pid)
+        if not p:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        p.trashed_at = datetime.utcnow()
+        db.commit()
+        _log(db, p.user_id, f"password:trash:{p.site_name}")
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.post("/passwords/<int:pid>/restore")
+def restore_password(pid: int):
+    db = SessionLocal()
+    try:
+        p = db.get(Password, pid)
+        if not p:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        p.trashed_at = None
+        db.commit()
+        _log(db, p.user_id, f"password:restore:{p.site_name}")
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.delete("/passwords/<int:pid>")
+def delete_password(pid: int):
+    db = SessionLocal()
+    try:
+        p = db.get(Password, pid)
+        if not p:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        uid = p.user_id
+        name = p.site_name
+        db.delete(p)
+        db.commit()
+        _log(db, uid, f"password:delete:{name}")
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.get("/passwords/<int:pid>/reveal")
+def reveal_password(pid: int):
+    """Return encrypted_password as stored (server never decrypts)."""
+    db = SessionLocal()
+    try:
+        p = db.get(Password, pid)
+        if not p:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        _log(db, p.user_id, f"password:reveal:{p.site_name}")
+        return jsonify({"ok": True, "encrypted_password": p.encrypted_password})
+    finally:
+        db.close()
+
+
+@app.post("/passwords/<int:pid>/favorite")
+def toggle_favorite(pid: int):
+    db = SessionLocal()
+    try:
+        p = db.get(Password, pid)
+        if not p:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        p.favorite = not bool(p.favorite)
+        db.commit()
+        _log(db, p.user_id, f"password:favorite:{p.site_name}:{int(p.favorite)}")
+        return jsonify({"ok": True, "favorite": bool(p.favorite)})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+
+# --------------------------- STATS / DASHBOARD ---------------------------
+
+@app.get("/stats/<int:user_id>")
+def stats(user_id: int):
+    db = SessionLocal()
+    try:
+        rows = db.execute(select(Password).where(Password.user_id == user_id)).scalars().all()
+        total = len(rows)
+        weak = sum(1 for p in rows if (p.strength or "").lower() == "weak")
+        medium = sum(1 for p in rows if (p.strength or "").lower() == "medium")
+        strong = sum(1 for p in rows if (p.strength or "").lower() == "strong")
+        favorites = sum(1 for p in rows if p.favorite)
+        trashed = sum(1 for p in rows if p.trashed_at is not None)
+
+        # simple score: strong=2, medium=1, weak=0 (ignore trashed)
+        active = [p for p in rows if p.trashed_at is None]
+        denom = max(1, len(active) * 2)
+        score = int(100 * (sum(2 if (p.strength or "").lower()=="strong" else 1 if (p.strength or "").lower()=="medium" else 0 for p in active) / denom))
 
         return jsonify({
-            "password": plain,
-            "username": pwd.username,
-            "site_name": pwd.site_name,
-            "site_url": pwd.site_url
+            "ok": True,
+            "total": total,
+            "active": len(active),
+            "weak": weak,
+            "medium": medium,
+            "strong": strong,
+            "favorites": favorites,
+            "trashed": trashed,
+            "score": score,
         })
-
-    except Exception as e:
-        print("❌ Reveal decrypt failed:", e)
-        return jsonify({"error": "Failed to decrypt password"}), 500
+    finally:
+        db.close()
 
 
-# -------------------------------------------------------------------
-# UPDATE PASSWORD
-# -------------------------------------------------------------------
-@app.route("/passwords/<int:pid>", methods=["PUT"])
-def update_password(pid):
+# --------------------------- PROFILE ---------------------------
+
+@app.get("/profile/<int:user_id>")
+def get_profile(user_id: int):
+    db = SessionLocal()
     try:
-        data = request.get_json()
-
-        with SessionLocal() as session:
-            pwd = session.query(Password).filter(Password.id == pid).first()
-            if not pwd:
-                return jsonify({"error": "Not found"}), 404
-
-            if "site_name" in data:
-                pwd.site_name = data["site_name"]
-
-            if "site_url" in data:
-                pwd.site_url = data["site_url"]
-
-            if "username" in data:
-                pwd.username = data["username"]
-
-            if "password" in data:
-                pwd.encrypted_password = encrypt_password(data["password"])
-                pwd.strength = calculate_strength(data["password"])
-
-            if "category" in data:
-                pwd.category = data["category"]
-
-            if "favorite" in data:
-                pwd.favorite = bool(data["favorite"])
-
-            pwd.last_updated = datetime.utcnow()
-            session.commit()
-
-        return jsonify({"message": "Updated"}), 200
-
-    except Exception as e:
-        print("❌ Update error:", e)
-        return jsonify({"error": str(e)}), 500
+        u = db.get(User, user_id)
+        if not u:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        return jsonify({"ok": True, "user": {"id": u.id, "username": u.username, "email": u.email}})
+    finally:
+        db.close()
 
 
-# -------------------------------------------------------------------
-# DELETE PASSWORD
-# -------------------------------------------------------------------
-@app.route("/passwords/<int:pid>", methods=["DELETE"])
-def delete_password(pid):
+@app.put("/profile/<int:user_id>")
+def update_profile(user_id: int):
+    data = request.get_json(force=True) or {}
+    db = SessionLocal()
     try:
-        with SessionLocal() as session:
-            pwd = session.query(Password).filter(Password.id == pid).first()
-            if not pwd:
-                return jsonify({"error": "Not found"}), 404
+        u = db.get(User, user_id)
+        if not u:
+            return jsonify({"ok": False, "error": "Not found"}), 404
 
-            session.delete(pwd)
-            session.commit()
+        if "username" in data and data["username"]:
+            u.username = str(data["username"]).strip()
+        if "email" in data and data["email"]:
+            u.email = str(data["email"]).strip()
 
-        return jsonify({"message": "Deleted"}), 200
-
+        db.commit()
+        _log(db, u.id, "profile:update")
+        return jsonify({"ok": True})
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"ok": False, "error": "Email already used"}), 400
     except Exception as e:
-        print("❌ Delete error:", e)
-        return jsonify({"error": str(e)}), 500
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
 
 
-# -------------------------------------------------------------------
-# TOGGLE FAVORITE STATUS
-# -------------------------------------------------------------------
-@app.route("/passwords/<int:pid>/favorite", methods=["PATCH", "PUT"])
-def toggle_favorite(pid):
+# --------------------------- DEVICES / SESSIONS ---------------------------
+
+@app.get("/devices/<int:user_id>")
+def list_devices(user_id: int):
+    db = SessionLocal()
     try:
-        print(f"\n🌟 Toggling favorite for password ID={pid}")
-
-        with SessionLocal() as session:
-            pwd = session.query(Password).filter(Password.id == pid).first()
-
-            if not pwd:
-                return jsonify({"error": "Password not found"}), 404
-
-            pwd.favorite = not bool(pwd.favorite)
-            pwd.last_updated = datetime.utcnow()
-            session.commit()
-
-            return jsonify({
-                "ok": True,
-                "favorite": bool(pwd.favorite)
-            }), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        devs = db.execute(select(UserDevice).where(UserDevice.user_id == user_id).order_by(UserDevice.last_used.desc())).scalars().all()
+        return jsonify({"ok": True, "devices": [
+            {
+                "id": d.id,
+                "device_name": d.device_name,
+                "ip_address": d.ip_address,
+                "last_used": d.last_used.isoformat() if d.last_used else None,
+            } for d in devs
+        ]})
+    finally:
+        db.close()
 
 
-# -------------------------------------------------------------------
-# CHECK PASSWORD ENDPOINT (pour vérifier sans stocker)
-# -------------------------------------------------------------------
-@app.route("/check-password", methods=["POST"])
-def check_password():
-    """
-    Vérifie si un mot de passe est compromis sans le stocker
-    Utile pour le frontend avant l'enregistrement
-    """
+@app.get("/sessions/<int:user_id>")
+def list_sessions(user_id: int):
+    db = SessionLocal()
     try:
-        data = request.get_json()
-        password = data.get("password", "")
+        sess = db.execute(select(Session).where(Session.user_id == user_id).order_by(Session.created_at.desc())).scalars().all()
+        return jsonify({"ok": True, "sessions": [
+            {
+                "id": s.id,
+                "device_info": s.device_info or "",
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+            } for s in sess
+        ]})
+    finally:
+        db.close()
 
-        if not password:
-            return jsonify({"error": "No password provided"}), 400
 
-        is_compromised, breach_count = check_password_breach(password)
-        strength = calculate_strength(password)
-
-        return jsonify({
-            "is_compromised": is_compromised,
-            "breach_count": breach_count,
-            "strength": strength,
-            "length": len(password),
-            "recommendation": "Changez ce mot de passe immédiatement !" if is_compromised else "Mot de passe sécurisé"
-        }), 200
-
+@app.delete("/sessions/<int:session_id>")
+def revoke_session(session_id: int):
+    db = SessionLocal()
+    try:
+        s = db.get(Session, session_id)
+        if not s:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        uid = s.user_id
+        db.delete(s)
+        db.commit()
+        _log(db, uid, f"session:revoke:{session_id}")
+        return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
 
 
-# -------------------------------------------------------------------
-# RUN BACKEND
-# -------------------------------------------------------------------
+# --------------------------- EXPORT / IMPORT ---------------------------
+
+@app.get("/export/<int:user_id>")
+def export_vault(user_id: int):
+    """Export JSON. Recommend encrypting client-side before saving to disk."""
+    db = SessionLocal()
+    try:
+        rows = db.execute(select(Password).where(Password.user_id == user_id)).scalars().all()
+        payload = {
+            "version": 1,
+            "exported_at": datetime.utcnow().isoformat(),
+            "passwords": [
+                {
+                    "site_name": p.site_name,
+                    "site_url": p.site_url or "",
+                    "site_icon": p.site_icon or "🔒",
+                    "username": p.username,
+                    "encrypted_password": p.encrypted_password,
+                    "category": p.category,
+                    "strength": p.strength,
+                    "favorite": bool(p.favorite),
+                    "trashed_at": p.trashed_at.isoformat() if p.trashed_at else None,
+                    "last_updated": p.last_updated.isoformat() if p.last_updated else None,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
+                }
+                for p in rows
+            ],
+        }
+        _log(db, user_id, "vault:export")
+        return jsonify({"ok": True, "vault": payload})
+    finally:
+        db.close()
+
+
+@app.post("/import/<int:user_id>")
+def import_vault(user_id: int):
+    data = request.get_json(force=True) or {}
+    vault = data.get("vault") or {}
+    items = vault.get("passwords") or []
+    if not isinstance(items, list):
+        return jsonify({"ok": False, "error": "Invalid vault format"}), 400
+
+    db = SessionLocal()
+    try:
+        imported = 0
+        for it in items:
+            if not it.get("site_name") or not it.get("username") or not it.get("encrypted_password"):
+                continue
+            p = Password(
+                user_id=user_id,
+                site_name=str(it.get("site_name")),
+                site_url=str(it.get("site_url") or "") or None,
+                site_icon=str(it.get("site_icon") or "🔒"),
+                username=str(it.get("username")),
+                encrypted_password=str(it.get("encrypted_password")),
+                category=str(it.get("category") or "personal"),
+                strength=str(it.get("strength") or "medium"),
+                favorite=bool(it.get("favorite") or False),
+                trashed_at=None,
+            )
+            db.add(p)
+            imported += 1
+        db.commit()
+        _log(db, user_id, f"vault:import:{imported}")
+        return jsonify({"ok": True, "imported": imported})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
+    # Always bind localhost for safety
     app.run(host="127.0.0.1", port=5000, debug=True)

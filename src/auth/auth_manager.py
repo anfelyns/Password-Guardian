@@ -2,6 +2,7 @@
 # auth_manager.py - Updated with proper password hashing
 
 import os
+from pathlib import Path
 import random
 import string
 import smtplib
@@ -11,7 +12,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from database.engine import SessionLocal
-from database.models import User, OTPCode
+from database.models import User, OTPCode, ActivityLog, TrustedDevice, RecoveryCode
 from sqlalchemy import select, update
 
 
@@ -46,18 +47,14 @@ def verify_password(stored_hash: str, salt: str, provided_password: str) -> bool
 # ----------------- Auth Manager Class -----------------
 class AuthManager:
     def __init__(self):
-        self.email_cfg = {
-            "smtp_server": "smtp.gmail.com",
-            "smtp_port": 587,
-            "sender_email": "youremail@gmail.com",
-            "sender_password": "jouckunpvjzxnskx",
-            "sender_name": "SecureVault",
-        }
+        self.email_cfg = self._load_email_cfg()
         # in-memory caches
         self.pending_2fa: dict[object, dict] = {}
         self.pending_reset: dict[str, dict] = {}
         self.pending_verify: dict[str, dict] = {}
         self._last_password = None
+        self.mfa_enabled_emails: set[str] = set()
+        self.recovery_codes: dict[int, list[str]] = {}
 
     # ---- normalize email key ----
     def _key(self, email_or_key) -> object:
@@ -67,14 +64,19 @@ class AuthManager:
 
     def _send_mail(self, to_email: str, subject: str, body: str, html: bool = False) -> bool:
         try:
+            if not self.email_cfg.get("sender_email") or not self.email_cfg.get("sender_password"):
+                raise RuntimeError("SMTP credentials missing. Check SMTP_USER / SMTP_PASSWORD in .env.")
             msg = MIMEMultipart('alternative')
             msg['From'] = f"{self.email_cfg['sender_name']} <{self.email_cfg['sender_email']}>"
             msg['To'] = to_email
             msg['Subject'] = subject
             msg.attach(MIMEText(body, 'html' if html else 'plain'))
             
-            s = smtplib.SMTP(self.email_cfg["smtp_server"], self.email_cfg["smtp_port"])
-            s.starttls()
+            if self.email_cfg.get("use_ssl"):
+                s = smtplib.SMTP_SSL(self.email_cfg["smtp_server"], self.email_cfg["smtp_port"])
+            else:
+                s = smtplib.SMTP(self.email_cfg["smtp_server"], self.email_cfg["smtp_port"])
+                s.starttls()
             s.login(self.email_cfg["sender_email"], self.email_cfg["sender_password"])
             s.send_message(msg)
             s.quit()
@@ -85,8 +87,42 @@ class AuthManager:
             print(f"❌ Email error: {e}")
             return False
 
+    def _load_email_cfg(self) -> dict:
+        # Load environment variables from project .env if available
+        try:
+            from dotenv import load_dotenv
+            project_root = Path(__file__).resolve().parents[2]
+            load_dotenv(project_root / ".env")
+        except Exception:
+            pass
+
+        def _get_bool(name: str, default: bool = False) -> bool:
+            val = os.getenv(name)
+            if val is None:
+                return default
+            return val.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        return {
+            "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
+            "smtp_port": int(os.getenv("SMTP_PORT", "587")),
+            "sender_email": os.getenv("SMTP_USER", ""),
+            "sender_password": os.getenv("SMTP_PASSWORD", ""),
+            "sender_name": os.getenv("SMTP_FROM_NAME", "SecureVault"),
+            "use_ssl": _get_bool("SMTP_USE_SSL", False),
+        }
+
     def _gen_code(self, n=6) -> str:
         return ''.join(random.choice(string.digits) for _ in range(n))
+
+    def _device_fingerprint(self) -> str:
+        """Create a stable fingerprint for this machine."""
+        import platform
+        try:
+            user = os.getlogin()
+        except Exception:
+            user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        raw = f"{platform.node()}|{platform.system()}|{platform.release()}|{user}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     # ------------ DB ops ------------
     def _user_by_email(self, email: str) -> dict | None:
@@ -194,7 +230,7 @@ class AuthManager:
         self.pending_verify.pop(k, None)
         return True
 
-    def authenticate(self, email: str, password: str) -> dict:
+    def authenticate(self, email: str, password: str, send_2fa: bool = True) -> dict:
         """Authenticate user with password hashing verification"""
         try:
             u = self._user_by_email(email)
@@ -231,35 +267,18 @@ class AuthManager:
 
             self._last_password = password
 
-            # Send 2FA code
-            code = self._gen_code()
-            k = self._key(email)
-            self.pending_2fa[k] = {
-                "code": str(code),
-                "expires": datetime.utcnow() + timedelta(minutes=10),
-                "user_id": u['id'],
-                "purpose": "login",
-            }
-            
-            print(f"[DEV] 2FA code for {k}: {code}")
-
-            self._send_mail(
-                email,
-                "Votre code 2FA – SecureVault",
-                f"Bonjour {u['username']},\n\n"
-                f"Votre code de connexion: {code}\n\n"
-                f"Ce code expire dans 10 minutes.\n\n"
-                f"SecureVault"
-            )
-            
+            sent = False
+            if send_2fa:
+                sent = self.send_2fa_code(email, u['id'], "login")
             return {
                 "error": None,
-                "2fa_sent": True,
+                "2fa_sent": sent,
                 "user": {
                     "id": u['id'],
                     "username": u['username'],
                     "email": u['email'],
                     "salt": u['salt'],
+                    "totp_enabled": bool(u.get("totp_enabled")),
                 }
             }
             
@@ -424,3 +443,169 @@ class AuthManager:
         
         print(f"[DEV] New verification code for {k}: {code}")
         return True
+
+    # ---------- Audit logs ----------
+    def list_audit_logs(self, user_id: int, filter_key: str = "all") -> list[dict]:
+        with SessionLocal() as s:
+            q = select(ActivityLog).where(ActivityLog.user_id == int(user_id))
+            if filter_key and filter_key != "all":
+                q = q.where(ActivityLog.action.like(f"{filter_key}:%"))
+            rows = s.execute(q.order_by(ActivityLog.created_at.desc())).scalars().all()
+            return [
+                {
+                    "id": r.id,
+                    "action": r.action,
+                    "details": r.details,
+                    "ip_address": r.ip_address,
+                    "created_at": r.created_at,
+                }
+                for r in rows
+            ]
+
+    # ---------- MFA helpers (email-based + TOTP + recovery codes + device trust) ----------
+    def set_mfa_enabled(self, email: str, enabled: bool) -> None:
+        k = self._key(email)
+        if enabled:
+            self.mfa_enabled_emails.add(k)
+        else:
+            self.mfa_enabled_emails.discard(k)
+
+    def is_mfa_enabled(self, email: str) -> bool:
+        return self._key(email) in self.mfa_enabled_emails
+
+    def is_totp_enabled(self, email: str) -> bool:
+        u = self._user_by_email(email)
+        return bool(u and u.get("totp_enabled"))
+
+    def enable_totp(self, email: str) -> dict:
+        """Enable TOTP for user, return secret + provisioning URI."""
+        try:
+            import pyotp
+        except Exception as e:
+            return {"error": f"pyotp is required for TOTP: {e}"}
+        u = self._user_by_email(email)
+        if not u:
+            return {"error": "User not found"}
+        secret = pyotp.random_base32()
+        with SessionLocal() as s:
+            s.execute(
+                update(User)
+                .where(User.email == self._key(email))
+                .values(totp_secret=secret, totp_enabled=True, mfa_enabled=True)
+            )
+            s.commit()
+        uri = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="SecureVault")
+        return {"secret": secret, "uri": uri}
+
+    def disable_totp(self, email: str) -> bool:
+        try:
+            with SessionLocal() as s:
+                s.execute(
+                    update(User)
+                    .where(User.email == self._key(email))
+                    .values(totp_secret=None, totp_enabled=False)
+                )
+                s.commit()
+            return True
+        except Exception:
+            return False
+
+    def verify_totp(self, email: str, code: str) -> bool:
+        try:
+            import pyotp
+        except Exception:
+            return False
+        u = self._user_by_email(email)
+        if not u or not u.get("totp_secret"):
+            return False
+        return pyotp.TOTP(u["totp_secret"]).verify(str(code).strip(), valid_window=1)
+
+    def _hash_recovery(self, code: str, salt: str) -> str:
+        return hashlib.sha256((salt + str(code)).encode("utf-8")).hexdigest()
+
+    def generate_recovery_codes(self, user_id: int, count: int = 8) -> list[str]:
+        """Generate and store hashed recovery codes, return plaintext once."""
+        u = None
+        with SessionLocal() as s:
+            u = s.get(User, int(user_id))
+            if not u:
+                return []
+            # delete old codes
+            s.query(RecoveryCode).filter(RecoveryCode.user_id == int(user_id)).delete()
+            codes: list[str] = []
+            for _ in range(max(1, count)):
+                c = self._gen_code(8)
+                codes.append(c)
+                s.add(RecoveryCode(user_id=int(user_id), code_hash=self._hash_recovery(c, u.salt)))
+            s.commit()
+            return codes
+
+    def list_recovery_codes(self, user_id: int) -> list[str]:
+        # For security, return empty (only shown at generation time)
+        return []
+
+    def verify_recovery_code(self, user_id: int, code: str) -> bool:
+        with SessionLocal() as s:
+            u = s.get(User, int(user_id))
+            if not u:
+                return False
+            h = self._hash_recovery(code, u.salt)
+            rc = (
+                s.query(RecoveryCode)
+                .filter(RecoveryCode.user_id == int(user_id))
+                .filter(RecoveryCode.code_hash == h)
+                .filter(RecoveryCode.used_at.is_(None))
+                .first()
+            )
+            if not rc:
+                return False
+            rc.used_at = datetime.utcnow()
+            s.commit()
+            return True
+
+    def trust_device(self, user_id: int, device_name: str | None = None, days: int = 30) -> bool:
+        fp = self._device_fingerprint()
+        name = device_name or fp[:12]
+        now = datetime.utcnow()
+        until = now + timedelta(days=days)
+        with SessionLocal() as s:
+            td = (
+                s.query(TrustedDevice)
+                .filter(TrustedDevice.user_id == int(user_id))
+                .filter(TrustedDevice.device_fingerprint == fp)
+                .first()
+            )
+            if td:
+                td.trusted_until = until
+                td.last_used = now
+                td.device_name = name
+            else:
+                s.add(
+                    TrustedDevice(
+                        user_id=int(user_id),
+                        device_fingerprint=fp,
+                        device_name=name,
+                        trusted_until=until,
+                        created_at=now,
+                        last_used=now,
+                    )
+                )
+            s.commit()
+        return True
+
+    def is_device_trusted(self, user_id: int) -> bool:
+        fp = self._device_fingerprint()
+        now = datetime.utcnow()
+        with SessionLocal() as s:
+            td = (
+                s.query(TrustedDevice)
+                .filter(TrustedDevice.user_id == int(user_id))
+                .filter(TrustedDevice.device_fingerprint == fp)
+                .filter(TrustedDevice.trusted_until > now)
+                .first()
+            )
+            if td:
+                td.last_used = now
+                s.commit()
+                return True
+        return False

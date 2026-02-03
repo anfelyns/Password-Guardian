@@ -6,7 +6,7 @@
 PyQt5==5.15.10
 
 # ---- Database & ORM ----
-SQLAlchemy==2.0.23
+SQLAlchemy==2.0.46
 alembic==1.13.0
 mysql-connector-python==8.2.0
 PyMySQL==1.1.0
@@ -18,6 +18,7 @@ Flask-CORS==4.0.0
 # ---- Security & Encryption ----
 cryptography==41.0.7
 pycryptodome==3.19.0
+argon2-cffi==23.1.0
 
 # ---- HTTP Client ----
 requests==2.31.0

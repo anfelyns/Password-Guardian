@@ -30,6 +30,7 @@ class PasswordCard(QFrame):
     view_clicked = pyqtSignal(dict)
     edit_clicked = pyqtSignal(int)
     delete_clicked = pyqtSignal(int)
+    restore_clicked = pyqtSignal(int)
     favorite_clicked = pyqtSignal(int)
     autofill_clicked = pyqtSignal(dict)
     
@@ -117,6 +118,8 @@ class PasswordCard(QFrame):
         header.addLayout(info, 1)
 
         # Action buttons
+        cat = self.password_data.get('category', 'personal')
+        is_trash = cat == "trash"
         actions = QHBoxLayout()
         actions.setSpacing(6)
 
@@ -144,8 +147,9 @@ class PasswordCard(QFrame):
         view_btn = QPushButton("👁️")
         edit_btn = QPushButton("✏️")
         delete_btn = QPushButton("🗑️")
+        restore_btn = QPushButton("↩")
 
-        for b in (view_btn, edit_btn, delete_btn):
+        for b in (view_btn, edit_btn, delete_btn, restore_btn):
             b.setFixedSize(34, 34)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(f"""
@@ -164,14 +168,21 @@ class PasswordCard(QFrame):
         view_btn.setToolTip("Voir le mot de passe")
         edit_btn.setToolTip("Modifier")
         delete_btn.setToolTip("Supprimer")
+        restore_btn.setToolTip("Restaurer")
 
         view_btn.clicked.connect(lambda: self.view_clicked.emit(self.password_data))
         edit_btn.clicked.connect(lambda: self.edit_clicked.emit(self.password_data['id']))
         delete_btn.clicked.connect(lambda: self.delete_clicked.emit(self.password_data['id']))
+        restore_btn.clicked.connect(lambda: self.restore_clicked.emit(self.password_data['id']))
 
-        actions.addWidget(view_btn)
-        actions.addWidget(edit_btn)
-        actions.addWidget(delete_btn)
+        if is_trash:
+            actions.addWidget(restore_btn)
+            actions.addWidget(delete_btn)
+            delete_btn.setToolTip("Supprimer d?finitivement")
+        else:
+            actions.addWidget(view_btn)
+            actions.addWidget(edit_btn)
+            actions.addWidget(delete_btn)
         header.addLayout(actions)
 
         root.addLayout(header)
@@ -526,6 +537,7 @@ class PasswordList(QWidget):
             card.view_clicked.connect(self.view_password.emit)
             card.edit_clicked.connect(self.edit_password.emit)
             card.delete_clicked.connect(self.delete_password.emit)
+            card.restore_clicked.connect(self.restore_password.emit)
             card.favorite_clicked.connect(self.favorite_password.emit)
             card.autofill_clicked.connect(self.auto_login_clicked.emit)
 

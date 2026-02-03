@@ -28,6 +28,10 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # MFA / TOTP
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # Relations
     passwords: Mapped[List["Password"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -35,6 +39,8 @@ class User(Base):
     sessions: Mapped[List["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     devices: Mapped[List["UserDevice"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     activity_logs: Mapped[List["ActivityLog"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    trusted_devices: Mapped[List["TrustedDevice"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    recovery_codes: Mapped[List["RecoveryCode"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}')>"
@@ -47,6 +53,8 @@ class User(Base):
             "email_verified": self.email_verified,
             "created_at": self.created_at.isoformat(),
             "last_login": self.last_login.isoformat() if self.last_login else None,
+            "mfa_enabled": self.mfa_enabled,
+            "totp_enabled": self.totp_enabled,
         }
 
 
@@ -183,6 +191,42 @@ class UserDevice(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="devices")
+
+
+# ============================================================
+# TRUSTED DEVICE (MFA trust)
+# ============================================================
+class TrustedDevice(Base):
+    __tablename__ = "trusted_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    device_fingerprint: Mapped[str] = mapped_column(String(128), index=True)
+    device_name: Mapped[Optional[str]] = mapped_column(String(255))
+    trusted_until: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped["User"] = relationship(back_populates="trusted_devices")
+
+
+# ============================================================
+# RECOVERY CODES (hashed)
+# ============================================================
+class RecoveryCode(Base):
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="recovery_codes")
 
 
 # ============================================================

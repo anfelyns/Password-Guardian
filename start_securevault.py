@@ -52,6 +52,14 @@ def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
+    # Ensure DB schema exists for local SQLite usage
+    try:
+        from database.engine import init_db
+        init_db()
+    except Exception:
+        print("âŒ Failed to initialize database schema.")
+        traceback.print_exc()
+
     app = QApplication(sys.argv)
     MainWindow = load_mainwindow()
     win = MainWindow()

@@ -127,3 +127,85 @@ def encrypt_for_storage(plaintext: str) -> str:
         return FERNET.encrypt(plaintext.encode("utf-8")).decode("utf-8")
     except Exception as e:
         raise ValueError(f"Fernet encryption failed: {e}")
+
+
+# ============================================================
+# VAULT EXPORT (AES-GCM + Argon2id)
+# ============================================================
+def _argon2_key(
+    passphrase: str,
+    salt: bytes,
+    time_cost: int = 3,
+    memory_cost: int = 65536,
+    parallelism: int = 2,
+    hash_len: int = 32,
+) -> bytes:
+    try:
+        from argon2.low_level import hash_secret_raw, Type
+    except Exception as e:
+        raise RuntimeError("argon2-cffi is required for vault encryption") from e
+
+    return hash_secret_raw(
+        secret=passphrase.encode("utf-8"),
+        salt=salt,
+        time_cost=time_cost,
+        memory_cost=memory_cost,
+        parallelism=parallelism,
+        hash_len=hash_len,
+        type=Type.ID,
+    )
+
+
+def encrypt_vault_payload(vault: dict, passphrase: str) -> dict:
+    if not passphrase:
+        raise ValueError("Passphrase required")
+
+    salt = get_random_bytes(16)
+    nonce = get_random_bytes(12)
+    kdf_params = {
+        "name": "argon2id",
+        "time_cost": 3,
+        "memory_cost": 65536,
+        "parallelism": 2,
+        "hash_len": 32,
+    }
+    key = _argon2_key(passphrase, salt, **kdf_params)
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    plaintext = json.dumps(vault, ensure_ascii=True).encode("utf-8")
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+
+    return {
+        "format": "pgvault",
+        "version": 1,
+        "kdf": kdf_params,
+        "salt": base64.b64encode(salt).decode("utf-8"),
+        "nonce": base64.b64encode(nonce).decode("utf-8"),
+        "tag": base64.b64encode(tag).decode("utf-8"),
+        "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
+    }
+
+
+def decrypt_vault_payload(blob: dict, passphrase: str) -> dict:
+    if not passphrase:
+        raise ValueError("Passphrase required")
+    if not isinstance(blob, dict) or blob.get("format") != "pgvault":
+        raise ValueError("Invalid vault format")
+
+    kdf = blob.get("kdf") or {}
+    salt = base64.b64decode(blob.get("salt", ""))
+    nonce = base64.b64decode(blob.get("nonce", ""))
+    tag = base64.b64decode(blob.get("tag", ""))
+    ciphertext = base64.b64decode(blob.get("ciphertext", ""))
+
+    key = _argon2_key(
+        passphrase,
+        salt,
+        time_cost=int(kdf.get("time_cost", 3)),
+        memory_cost=int(kdf.get("memory_cost", 65536)),
+        parallelism=int(kdf.get("parallelism", 2)),
+        hash_len=int(kdf.get("hash_len", 32)),
+    )
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    return json.loads(plaintext.decode("utf-8"))
