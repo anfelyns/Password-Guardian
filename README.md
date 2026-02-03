@@ -26,10 +26,6 @@ python -m venv .venv
 pip install -r requirements.txt
 python start_PasswordGuardian.py
 ```
-If you do not have `start_PasswordGuardian.py`, use:
-```bash
-python start_securevault.py
-```
 
 ## Environment Configuration
 Create a `.env` file (do not commit it):
