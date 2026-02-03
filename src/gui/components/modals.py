@@ -161,7 +161,7 @@ class LoginModal(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SecureVault - Connexion")
+        self.setWindowTitle("Password Guardian - Connexion")
         self.setFixedSize(450, 570)
         self.setModal(True)
         self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowTitleHint)
@@ -337,7 +337,7 @@ class LoginModal(QDialog):
         # Register link
         footer = QHBoxLayout()
         footer.setAlignment(Qt.AlignCenter)
-        t = QLabel("Nouveau chez SecureVault?")
+        t = QLabel("Nouveau chez Password Guardian?")
         t.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_MUTED))
         link = QLabel("<a href='#' style='color:#60a5fa; text-decoration:none; font-weight:bold;'>Créer un compte</a>")
         link.setOpenExternalLinks(False)
@@ -394,7 +394,7 @@ class RegisterModal(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SecureVault - Inscription")
+        self.setWindowTitle("Password Guardian - Inscription")
         self.setFixedSize(500, 750)
         self.setModal(True)
         self.init_ui()
@@ -418,7 +418,7 @@ class RegisterModal(QDialog):
         title = QLabel("Créer un compte")
         title.setFont(QFont("Segoe UI", 24, QFont.Bold))
         title.setStyleSheet(Styles.get_label_style(24))
-        sub = QLabel("Rejoignez la communauté SecureVault")
+        sub = QLabel("Rejoignez la communauté Password Guardian")
         sub.setAlignment(Qt.AlignCenter)
         sub.setStyleSheet(Styles.get_label_style(14, Styles.TEXT_SECONDARY))
         head.addWidget(icon)

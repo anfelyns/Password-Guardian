@@ -22,7 +22,7 @@ def start_gui():
     """
     sys.path.insert(0, PROJECT_ROOT) 
     try:
-        from start_securevault import main as gui_main  
+        from start_PasswordGuardian import main as gui_main  
         return gui_main()
     except ModuleNotFoundError:
         # Fallback: run the script directly

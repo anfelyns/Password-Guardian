@@ -107,7 +107,7 @@ class AuthManager:
             "smtp_port": int(os.getenv("SMTP_PORT", "587")),
             "sender_email": os.getenv("SMTP_USER", ""),
             "sender_password": os.getenv("SMTP_PASSWORD", ""),
-            "sender_name": os.getenv("SMTP_FROM_NAME", "SecureVault"),
+            "sender_name": os.getenv("SMTP_FROM_NAME", "Password Guardian"),
             "use_ssl": _get_bool("SMTP_USE_SSL", False),
         }
 
@@ -194,8 +194,8 @@ class AuthManager:
             
             self._send_mail(
                 email,
-                "Vérification de votre compte – SecureVault",
-                f"Bonjour {username},\n\nVotre code: {code}\n\nExpire dans 15 min.\n\nSecureVault"
+                "Vérification de votre compte – Password Guardian",
+                f"Bonjour {username},\n\nVotre code: {code}\n\nExpire dans 15 min.\n\nPassword Guardian"
             )
             
             print(f"[DEV] Registration code for {k}: {code}")
@@ -343,7 +343,7 @@ class AuthManager:
         <p>Ce code expire dans 5 minutes.</p>
         </body></html>
         """
-        return self._send_mail(to_email, "🔐 Code de vérification - SecureVault", html, html=True)
+        return self._send_mail(to_email, "🔐 Code de vérification - Password Guardian", html, html=True)
 
     def verify_2fa(self, user_id_or_email, code: str) -> bool:
         key = self._key(user_id_or_email) if isinstance(user_id_or_email, str) else user_id_or_email
@@ -381,8 +381,8 @@ class AuthManager:
         
         ok = self._send_mail(
             email,
-            "Réinitialisation du mot de passe – SecureVault",
-            f"Bonjour {u['username']},\n\nVotre code: {code}\n\nExpire dans 15 min.\n\nSecureVault"
+            "Réinitialisation du mot de passe – Password Guardian",
+            f"Bonjour {u['username']},\n\nVotre code: {code}\n\nExpire dans 15 min.\n\nPassword Guardian"
         )
         
         if ok:
@@ -434,11 +434,11 @@ class AuthManager:
         
         self._send_mail(
             email,
-            "Vérification de votre compte – SecureVault",
+            "Vérification de votre compte – Password Guardian",
             f"Bonjour {u['username']},\n\n"
             f"Votre nouveau code de vérification: {code}\n\n"
             f"Ce code expire dans 15 minutes.\n\n"
-            f"SecureVault"
+            f"Password Guardian"
         )
         
         print(f"[DEV] New verification code for {k}: {code}")
@@ -494,7 +494,7 @@ class AuthManager:
                 .values(totp_secret=secret, totp_enabled=True, mfa_enabled=True)
             )
             s.commit()
-        uri = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="SecureVault")
+        uri = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="Password Guardian")
         return {"secret": secret, "uri": uri}
 
     def disable_totp(self, email: str) -> bool:

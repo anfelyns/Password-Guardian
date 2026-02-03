@@ -11,7 +11,6 @@ for p in (PROJECT_ROOT, SRC_DIR, GUI_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# alias "gui" => src/gui so legacy imports still work
 if "gui" not in sys.modules:
     gui_pkg = types.ModuleType("gui")
     gui_pkg.__path__ = [GUI_DIR]
@@ -36,7 +35,7 @@ def load_mainwindow():
             from gui.main_window import MainWindow  # alias
             return MainWindow
         except Exception:
-            print("âŒ Failed to import MainWindow (both src.gui and gui). Traceback:")
+            print(" Failed to import MainWindow (both src.gui and gui). Traceback:")
             traceback.print_exc()
             class Placeholder(QMainWindow):
                 def __init__(self):
@@ -57,7 +56,7 @@ def main():
         from database.engine import init_db
         init_db()
     except Exception:
-        print("âŒ Failed to initialize database schema.")
+        print("Failed to initialize database schema.")
         traceback.print_exc()
 
     app = QApplication(sys.argv)

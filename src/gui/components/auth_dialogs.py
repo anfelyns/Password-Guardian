@@ -115,7 +115,7 @@ class LoginDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SecureVault - Connexion")
+        self.setWindowTitle("Password Guardian - Connexion")
         self.setModal(True)
         self.setFixedSize(460, 520)
 
@@ -274,7 +274,7 @@ class RegisterDialog(QDialog):
 
     def __init__(self, auth_mgr: AuthManager, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SecureVault - Créer un compte")
+        self.setWindowTitle("Password Guardian - Créer un compte")
         self.setModal(True)
         self.setFixedSize(500, 560)
 
