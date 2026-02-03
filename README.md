@@ -58,5 +58,3 @@ the database file is writable in the project directory.
 - If tables are missing, run migrations or recreate the local DB.
 - If the UI shows encoding issues, ensure files are saved in UTF‑8.
 
-## License
-Private project. Add a license if you plan to distribute.
